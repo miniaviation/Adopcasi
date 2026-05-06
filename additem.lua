@@ -1,49 +1,75 @@
--- Auto Add Item To Offer Script
--- Fires after trade is accepted and adds a small food item to your offer
+-- Auto Trade Script
+-- Auto accepts trades and adds Sandwich to offer using live inventory
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
 local API = ReplicatedStorage:WaitForChild("API")
-local AddItemToOffer = API:WaitForChild("TradeAPI/AddItemToOffer")
-local AcceptNegotiation = API:WaitForChild("TradeAPI/AcceptNegotiation") -- confirms offer
-
--- Your item ID (replace with any small food item ID from your inventory)
-local ITEM_ID = "2_9acd1bca3ca74fdcb4f08536792e8f6c"
 
 local TradeRequestReceived = API:WaitForChild("TradeAPI/TradeRequestReceived")
 local AcceptOrDecline = API:WaitForChild("TradeAPI/AcceptOrDeclineTradeRequest")
+local AddItemToOffer = API:WaitForChild("TradeAPI/AddItemToOffer")
 
-print("[OfferScript] Ready — will auto-add item when trade opens.")
+local Fsys = require(ReplicatedStorage:WaitForChild("Fsys"))
+local ClientData = Fsys.load("ClientData")
+
+local ITEM_KIND = "sandwich-default"
+
+local function findSandwichId()
+    local ok, inventory = pcall(function()
+        return ClientData.get("inventory")
+    end)
+
+    if not ok or not inventory or not inventory.food then
+        warn("[TradeScript] Could not access inventory.")
+        return nil
+    end
+
+    for id, item in pairs(inventory.food) do
+        if tostring(item.kind) == ITEM_KIND then
+            return tostring(id)
+        end
+    end
+
+    warn("[TradeScript] Sandwich not found in inventory.")
+    return nil
+end
+
+print("[TradeScript] Ready — auto accepting all trades and adding Sandwich.")
 
 TradeRequestReceived.OnClientEvent:Connect(function(sender)
     if not sender then return end
+    print("[TradeScript] Trade request from: " .. tostring(sender.Name))
 
-    print("[OfferScript] Trade opened with: " .. tostring(sender.Name))
+    task.wait(0.5)
 
-    task.wait(0.5) -- Wait for trade window to open
-
-    -- Accept the trade request first
-    local success1, err1 = pcall(function()
+    -- Step 1: Accept trade
+    local ok1, err1 = pcall(function()
         AcceptOrDecline:InvokeServer(sender, true)
     end)
+    if not ok1 then
+        warn("[TradeScript] Failed to accept: " .. tostring(err1))
+        return
+    end
+    print("[TradeScript] Accepted trade with: " .. sender.Name)
 
-    if success1 then
-        print("[OfferScript] Trade accepted with: " .. sender.Name)
-    else
-        warn("[OfferScript] Failed to accept trade: " .. tostring(err1))
+    task.wait(0.5)
+
+    -- Step 2: Get fresh sandwich ID from live inventory
+    local itemId = findSandwichId()
+    if not itemId then
+        warn("[TradeScript] No sandwich found — skipping offer.")
         return
     end
 
-    task.wait(0.5) -- Wait for trade session to register
+    task.wait(0.3)
 
-    -- Add the item to your offer
-    local success2, err2 = pcall(function()
-        AddItemToOffer:FireServer(ITEM_ID)
+    -- Step 3: Add to offer
+    local ok2, err2 = pcall(function()
+        AddItemToOffer:FireServer(itemId)
     end)
 
-    if success2 then
-        print("[OfferScript] Item added to offer: " .. ITEM_ID)
+    if ok2 then
+        print("[TradeScript] Sandwich added to offer! ID: " .. itemId)
     else
-        warn("[OfferScript] Failed to add item: " .. tostring(err2))
+        warn("[TradeScript] Failed to add sandwich: " .. tostring(err2))
     end
 end)
