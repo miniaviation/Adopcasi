@@ -22,7 +22,6 @@ local partnerHasItem = false
 local confirmed = false
 local remindThread = nil
 
--- Mirrors the notification script's tracking variables
 local lastTradeId = nil
 local lastPartnerNegotiated = false
 
@@ -69,12 +68,10 @@ local function doConfirm()
     pcall(function() RefreshProfile:InvokeServer(sender) end)
     task.wait(0.3)
 
-    -- Accept our side of negotiation first
     pcall(function() AcceptNegotiation:FireServer() end)
     print("[TradeScript] Accepted negotiation.")
     task.wait(1)
 
-    -- Then confirm
     pcall(function() ConfirmTrade:FireServer() end)
     print("[TradeScript] Trade confirmed!")
 
@@ -85,11 +82,16 @@ local function doConfirm()
     lastPartnerNegotiated = false
 end
 
--- Mirrors the notification script's ClientData trade watcher exactly
 ClientData.register_callback_plus_existing("trade", function(newState)
+    -- Clear state if trade ended
     if newState == nil then
         lastTradeId = nil
         lastPartnerNegotiated = false
+        return
+    end
+
+    -- Guard: make sure newState is a trade table, not a Player Instance or anything else
+    if typeof(newState) ~= "table" then
         return
     end
 
@@ -99,7 +101,7 @@ ClientData.register_callback_plus_existing("trade", function(newState)
         lastPartnerNegotiated = false
     end
 
-    -- Determine partner offer the same way _get_partner_offer does in source
+    -- Works for any partner — figure out who is local and get the other side's offer
     local isLocalSender = newState.sender == LocalPlayer
     local partnerOffer = isLocalSender and newState.recipient_offer or newState.sender_offer
 
@@ -107,7 +109,6 @@ ClientData.register_callback_plus_existing("trade", function(newState)
 
     local partnerNegotiated = partnerOffer.negotiated == true
 
-    -- Only fire when partner JUST flipped to accepted this callback
     if partnerNegotiated and not lastPartnerNegotiated then
         lastPartnerNegotiated = true
         print("[TradeScript] Partner accepted negotiation!")
@@ -123,16 +124,16 @@ ClientData.register_callback_plus_existing("trade", function(newState)
     end
 end)
 
--- Partner added item
+-- Partner added an item to their side
 SuggestionAdded.OnClientEvent:Connect(function()
     if not currentSender then return end
     partnerHasItem = true
     cancelRemind()
     print("[TradeScript] Partner added item.")
 
-    task.wait(0.2) -- let state settle
+    task.wait(0.2)
     local ok, tradeState = pcall(function() return ClientData.get("trade") end)
-    if ok and tradeState then
+    if ok and tradeState and typeof(tradeState) == "table" then
         local isLocalSender = tradeState.sender == LocalPlayer
         local partnerOffer = isLocalSender and tradeState.recipient_offer or tradeState.sender_offer
         if partnerOffer and partnerOffer.negotiated == true then
@@ -142,7 +143,7 @@ SuggestionAdded.OnClientEvent:Connect(function()
     end
 end)
 
--- Partner removed item
+-- Partner removed their item
 SuggestionRemoved.OnClientEvent:Connect(function()
     if not currentSender then return end
     partnerHasItem = false
@@ -151,11 +152,12 @@ SuggestionRemoved.OnClientEvent:Connect(function()
     startRemindLoop()
 end)
 
-print("[TradeScript] Ready — watching for trades...")
+print("[TradeScript] Ready — watching for trades from anyone...")
 
+-- Fires for every incoming trade request regardless of who sends it
 TradeRequestReceived.OnClientEvent:Connect(function(sender)
     if not sender then return end
-    print("[TradeScript] Trade from: " .. tostring(sender.Name))
+    print("[TradeScript] Trade request from: " .. tostring(sender.Name))
 
     currentSender = sender
     partnerHasItem = false
@@ -165,21 +167,22 @@ TradeRequestReceived.OnClientEvent:Connect(function(sender)
 
     task.wait(0.5)
 
+    -- Accept the trade from whoever sent it
     local ok1, err1 = pcall(function()
         AcceptOrDecline:InvokeServer(sender, true)
     end)
     if not ok1 then
-        warn("[TradeScript] Failed to accept: " .. tostring(err1))
+        warn("[TradeScript] Failed to accept trade: " .. tostring(err1))
         currentSender = nil
         return
     end
-    print("[TradeScript] Accepted trade with: " .. sender.Name)
+    print("[TradeScript] Accepted trade with: " .. tostring(sender.Name))
 
     task.wait(0.5)
 
     local itemId = findSandwichId()
     if not itemId then
-        warn("[TradeScript] No sandwich found.")
+        warn("[TradeScript] No sandwich found in inventory.")
         currentSender = nil
         return
     end
@@ -190,12 +193,12 @@ TradeRequestReceived.OnClientEvent:Connect(function(sender)
     if ok2 then
         print("[TradeScript] Sandwich added! ID: " .. itemId)
     else
-        warn("[TradeScript] Failed to add: " .. tostring(err2))
+        warn("[TradeScript] Failed to add sandwich: " .. tostring(err2))
         currentSender = nil
         return
     end
 
-    -- Fire AcceptNegotiation immediately after adding our item
+    -- Accept our side of negotiation right after adding item
     task.wait(0.3)
     pcall(function() AcceptNegotiation:FireServer() end)
     print("[TradeScript] Sent AcceptNegotiation after adding item.")
@@ -203,5 +206,5 @@ TradeRequestReceived.OnClientEvent:Connect(function(sender)
     task.wait(0.3)
     pcall(function() SendQuickChat:FireServer("Please add an item to the trade!") end)
     startRemindLoop()
-    print("[TradeScript] Waiting for partner to add item and accept...")
+    print("[TradeScript] Waiting for " .. tostring(sender.Name) .. " to add item and accept...")
 end)
