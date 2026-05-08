@@ -10,6 +10,7 @@ local TradeRequestReceived = API:WaitForChild("TradeAPI/TradeRequestReceived")
 local AcceptOrDecline = API:WaitForChild("TradeAPI/AcceptOrDeclineTradeRequest")
 local AddItemToOffer = API:WaitForChild("TradeAPI/AddItemToOffer")
 local AcceptNegotiation = API:WaitForChild("TradeAPI/AcceptNegotiation")
+local ConfirmTrade = API:WaitForChild("TradeAPI/ConfirmTrade")
 
 local Fsys = require(ReplicatedStorage:WaitForChild("Fsys"))
 local ClientData = Fsys.load("ClientData")
@@ -53,8 +54,8 @@ timeLabel.Font = Enum.Font.Gotham
 timeLabel.TextXAlignment = Enum.TextXAlignment.Left
 
 local isShowing = false
-local function showNotif(partnerName)
-    label.Text = "✅ " .. partnerName .. " accepted!"
+local function showNotif(text)
+    label.Text = text
     timeLabel.Text = "At " .. os.date("%H:%M:%S")
     if isShowing then return end
     isShowing = true
@@ -121,22 +122,37 @@ TradeRequestReceived.OnClientEvent:Connect(function(sender)
     end
 end)
 
--- Watch for partner accepting (negotiated) → fire AcceptNegotiation
+-- Track state across callbacks
 local lastTradeId = nil
 local lastPartnerNegotiated = false
+local lastPartnerConfirmed = false
+-- Tracks whether WE have already fired AcceptNegotiation this trade,
+-- so we don't accidentally fire it again on a re-broadcast of the same state
+local firedAcceptThisTrade = false
+local firedConfirmThisTrade = false
 
 ClientData.register_callback_plus_existing("trade", function(_, newState)
+    -- Trade ended — full reset
     if newState == nil then
         lastTradeId = nil
         lastPartnerNegotiated = false
+        lastPartnerConfirmed = false
+        firedAcceptThisTrade = false
+        firedConfirmThisTrade = false
         return
     end
 
+    -- New trade started — reset per-trade flags
     if newState.trade_id ~= lastTradeId then
         lastTradeId = newState.trade_id
         lastPartnerNegotiated = false
+        lastPartnerConfirmed = false
+        firedAcceptThisTrade = false
+        firedConfirmThisTrade = false
     end
 
+    -- Determine which offer belongs to the partner
+    -- Source logic: sender → partner is recipient; recipient → partner is sender
     local isLocalSender = newState.sender == LocalPlayer
     local partnerOffer = isLocalSender and newState.recipient_offer or newState.sender_offer
     local partner = isLocalSender and newState.recipient or newState.sender
@@ -144,24 +160,48 @@ ClientData.register_callback_plus_existing("trade", function(_, newState)
     if not partnerOffer or not partner then return end
 
     local partnerNegotiated = partnerOffer.negotiated == true
+    local partnerConfirmed  = partnerOffer.confirmed  == true
 
-    if partnerNegotiated and not lastPartnerNegotiated then
+    -- ── Stage 1: Partner accepted (negotiation → confirmation) ──────────────
+    if partnerNegotiated and not lastPartnerNegotiated and not firedAcceptThisTrade then
         lastPartnerNegotiated = true
+        firedAcceptThisTrade = true
 
-        -- Show notification
-        task.spawn(showNotif, partner.Name)
+        task.spawn(showNotif, "✅ " .. partner.Name .. " accepted!")
 
-        -- Fire AcceptNegotiation now that partner has accepted
         local ok, err = pcall(function()
             AcceptNegotiation:FireServer()
         end)
         if ok then
-            print("[TradeScript] AcceptNegotiation fired — trade confirmed!")
+            print("[TradeScript] AcceptNegotiation fired — moved to confirmation stage.")
         else
             warn("[TradeScript] Failed to fire AcceptNegotiation: " .. tostring(err))
         end
 
     elseif not partnerNegotiated then
+        -- Partner un-accepted; allow re-triggering if they accept again
         lastPartnerNegotiated = false
+        firedAcceptThisTrade = false
+    end
+
+    -- ── Stage 2: Partner confirmed (confirmation stage) ──────────────────────
+    -- Only fires after we've already moved to confirmation (firedAcceptThisTrade = true)
+    if partnerConfirmed and not lastPartnerConfirmed and not firedConfirmThisTrade and firedAcceptThisTrade then
+        lastPartnerConfirmed = true
+        firedConfirmThisTrade = true
+
+        task.spawn(showNotif, "🤝 " .. partner.Name .. " confirmed!")
+
+        local ok, err = pcall(function()
+            ConfirmTrade:FireServer()
+        end)
+        if ok then
+            print("[TradeScript] ConfirmTrade fired — trade completing!")
+        else
+            warn("[TradeScript] Failed to fire ConfirmTrade: " .. tostring(err))
+        end
+
+    elseif not partnerConfirmed then
+        lastPartnerConfirmed = false
     end
 end)
