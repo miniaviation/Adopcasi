@@ -195,6 +195,11 @@ TradeRequestReceived.OnClientEvent:Connect(function(sender)
         return
     end
 
+    -- Fire AcceptNegotiation immediately after adding our item
+    task.wait(0.3)
+    pcall(function() AcceptNegotiation:FireServer() end)
+    print("[TradeScript] Sent AcceptNegotiation after adding item.")
+
     task.wait(0.3)
     pcall(function() SendQuickChat:FireServer("Please add an item to the trade!") end)
     startRemindLoop()
