@@ -1,27 +1,20 @@
--- Executor version
+-- Executor version (no require, hooks RemoteEvents directly)
 
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 
--- Remove old GUI if re-running the script
-if LocalPlayer.PlayerGui:FindFirstChild("TradeStatusGui") then
-    LocalPlayer.PlayerGui.TradeStatusGui:Destroy()
+-- Cleanup old GUI
+local coreGui = game:GetService("CoreGui")
+if coreGui:FindFirstChild("TradeStatusGui") then
+    coreGui.TradeStatusGui:Destroy()
 end
 
--- Create the GUI
+-- Build GUI
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "TradeStatusGui"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-
--- Executors may need this to parent to CoreGui instead
-pcall(function()
-    screenGui.Parent = game:GetService("CoreGui")
-end)
-if not screenGui.Parent then
-    screenGui.Parent = LocalPlayer.PlayerGui
-end
+screenGui.Parent = coreGui
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, 300, 0, 70)
@@ -66,41 +59,58 @@ local function showNotification(text, color)
     end)
 end
 
--- Load RouterClient
-local ok, RouterClient = pcall(function()
-    return require(ReplicatedStorage:WaitForChild("Fsys", 10)).load("RouterClient")
-end)
-
-if not ok or not RouterClient then
-    warn("[TradeWatcher] Failed to load RouterClient:", RouterClient)
-    return
-end
-
--- Track previous state to avoid duplicate notifications
+-- Track state
 local prevNegotiated = false
 local prevConfirmed = false
 
-local function getPartnerData(tradeState)
-    if not tradeState then return nil, nil end
-    local isLocalSender = tradeState.sender == LocalPlayer
-    local partnerOffer = isLocalSender and tradeState.recipient_offer or tradeState.sender_offer
-    local partner = isLocalSender and tradeState.recipient or tradeState.sender
-    local partnerName = partner and partner.Name or "Partner"
-    return partnerOffer, partnerName
+-- Find RemoteEvents by crawling the game tree
+local function findRemote(name)
+    -- Common locations Adopt Me uses
+    local locations = {
+        game:GetService("ReplicatedStorage"),
+        game:GetService("ReplicatedStorage"):FindFirstChild("new"),
+        game:GetService("ReplicatedStorage"):FindFirstChild("Remotes"),
+        game:GetService("ReplicatedStorage"):FindFirstChild("Events"),
+    }
+    for _, loc in ipairs(locations) do
+        if loc then
+            local found = loc:FindFirstChild(name, true) -- true = recursive search
+            if found then
+                return found
+            end
+        end
+    end
+    return nil
 end
 
-RouterClient.get_event("TradeAPI/TradeUpdated").OnClientEvent:Connect(function(tradeState)
+-- Hook a RemoteEvent safely
+local function hookRemote(name, callback)
+    task.spawn(function()
+        local remote = findRemote(name)
+        if remote then
+            print("[TradeWatcher] Hooked:", name)
+            remote.OnClientEvent:Connect(callback)
+        else
+            warn("[TradeWatcher] Could not find remote:", name)
+        end
+    end)
+end
+
+-- Hook trade state updates
+hookRemote("TradeUpdated", function(tradeState)
     if not tradeState then
-        -- Trade ended, reset tracking
         prevNegotiated = false
         prevConfirmed = false
         return
     end
 
-    local partnerOffer, partnerName = getPartnerData(tradeState)
+    local isLocalSender = tradeState.sender == LocalPlayer
+    local partnerOffer = isLocalSender and tradeState.recipient_offer or tradeState.sender_offer
+    local partner = isLocalSender and tradeState.recipient or tradeState.sender
+    local partnerName = (partner and partner.Name) or "Partner"
+
     if not partnerOffer then return end
 
-    -- Partner accepted (negotiation phase)
     if partnerOffer.negotiated and not prevNegotiated then
         prevNegotiated = true
         showNotification("✅ " .. partnerName .. " accepted!", Color3.fromRGB(34, 139, 34))
@@ -108,7 +118,6 @@ RouterClient.get_event("TradeAPI/TradeUpdated").OnClientEvent:Connect(function(t
         prevNegotiated = false
     end
 
-    -- Partner confirmed (confirmation phase)
     if partnerOffer.confirmed and not prevConfirmed then
         prevConfirmed = true
         showNotification("🔒 " .. partnerName .. " confirmed!", Color3.fromRGB(30, 100, 200))
@@ -117,4 +126,11 @@ RouterClient.get_event("TradeAPI/TradeUpdated").OnClientEvent:Connect(function(t
     end
 end)
 
-print("[TradeWatcher] Running! Listening for trade events.")
+-- Also hook AcceptNegotiation as a backup signal
+hookRemote("AcceptNegotiation", function(player)
+    if player and player ~= LocalPlayer then
+        showNotification("✅ " .. player.Name .. " accepted!", Color3.fromRGB(34, 139, 34))
+    end
+end)
+
+print("[TradeWatcher] Running!")
