@@ -1,4 +1,3 @@
--- LocalScript in StarterPlayerScripts
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -10,14 +9,14 @@ local API = ReplicatedStorage:WaitForChild("API")
 local TradeRequestReceived = API:WaitForChild("TradeAPI/TradeRequestReceived")
 local AcceptOrDecline = API:WaitForChild("TradeAPI/AcceptOrDeclineTradeRequest")
 local AddItemToOffer = API:WaitForChild("TradeAPI/AddItemToOffer")
+local AcceptNegotiation = API:WaitForChild("TradeAPI/AcceptNegotiation")
 
--- Fsys / ClientData
 local Fsys = require(ReplicatedStorage:WaitForChild("Fsys"))
 local ClientData = Fsys.load("ClientData")
 
 local ITEM_KIND = "sandwich-default"
 
--- GUI
+-- GUI setup
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "TradeAcceptGui"
 screenGui.ResetOnSpawn = false
@@ -29,7 +28,6 @@ frame.Position = UDim2.new(0.5, -150, 0, -90)
 frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 frame.BorderSizePixel = 0
 frame.Parent = screenGui
-
 Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 12)
 
 local stroke = Instance.new("UIStroke", frame)
@@ -54,7 +52,6 @@ timeLabel.TextScaled = true
 timeLabel.Font = Enum.Font.Gotham
 timeLabel.TextXAlignment = Enum.TextXAlignment.Left
 
--- Notification function
 local isShowing = false
 local function showNotif(partnerName)
     label.Text = "✅ " .. partnerName .. " accepted!"
@@ -72,7 +69,7 @@ local function showNotif(partnerName)
     isShowing = false
 end
 
--- Find sandwich in inventory
+-- Sandwich helpers
 local function findSandwichId()
     local ok, inventory = pcall(function()
         return ClientData.get("inventory")
@@ -90,15 +87,13 @@ local function findSandwichId()
     return nil
 end
 
--- Auto accept trade + add sandwich
+-- Auto-accept incoming trade requests and add sandwich
 print("[TradeScript] Ready — auto accepting all trades and adding Sandwich.")
-
 TradeRequestReceived.OnClientEvent:Connect(function(sender)
     if not sender then return end
     print("[TradeScript] Trade request from: " .. tostring(sender.Name))
     task.wait(0.5)
 
-    -- Step 1: Accept trade
     local ok1, err1 = pcall(function()
         AcceptOrDecline:InvokeServer(sender, true)
     end)
@@ -109,7 +104,6 @@ TradeRequestReceived.OnClientEvent:Connect(function(sender)
     print("[TradeScript] Accepted trade with: " .. sender.Name)
     task.wait(0.5)
 
-    -- Step 2: Get sandwich ID
     local itemId = findSandwichId()
     if not itemId then
         warn("[TradeScript] No sandwich found — skipping offer.")
@@ -117,7 +111,6 @@ TradeRequestReceived.OnClientEvent:Connect(function(sender)
     end
     task.wait(0.3)
 
-    -- Step 3: Add sandwich to offer
     local ok2, err2 = pcall(function()
         AddItemToOffer:FireServer(itemId)
     end)
@@ -128,7 +121,7 @@ TradeRequestReceived.OnClientEvent:Connect(function(sender)
     end
 end)
 
--- Detect when partner accepts and fire AcceptNegotiation
+-- Watch for partner accepting (negotiated) → fire AcceptNegotiation
 local lastTradeId = nil
 local lastPartnerNegotiated = false
 
@@ -158,18 +151,15 @@ ClientData.register_callback_plus_existing("trade", function(_, newState)
         -- Show notification
         task.spawn(showNotif, partner.Name)
 
-        -- Fire AcceptNegotiation
-        task.spawn(function()
-            task.wait(0.3)
-            local ok, err = pcall(function()
-                game:GetService("ReplicatedStorage"):WaitForChild("API"):WaitForChild("TradeAPI/AcceptNegotiation"):FireServer()
-            end)
-            if ok then
-                print("[TradeScript] AcceptNegotiation fired after " .. partner.Name .. " accepted.")
-            else
-                warn("[TradeScript] Failed to fire AcceptNegotiation: " .. tostring(err))
-            end
+        -- Fire AcceptNegotiation now that partner has accepted
+        local ok, err = pcall(function()
+            AcceptNegotiation:FireServer()
         end)
+        if ok then
+            print("[TradeScript] AcceptNegotiation fired — trade confirmed!")
+        else
+            warn("[TradeScript] Failed to fire AcceptNegotiation: " .. tostring(err))
+        end
 
     elseif not partnerNegotiated then
         lastPartnerNegotiated = false
