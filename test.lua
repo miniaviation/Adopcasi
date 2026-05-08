@@ -1,9 +1,9 @@
 -- Auto Trade Script
--- Waits for partner to add item before accepting, reminds them if they haven't
+-- Only confirms after partner clicks Accept (AcceptNegotiation)
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Players = game:GetService("Players")
 local API = ReplicatedStorage:WaitForChild("API")
+local Fsys = require(ReplicatedStorage:WaitForChild("Fsys"))
 
 local TradeRequestReceived = API:WaitForChild("TradeAPI/TradeRequestReceived")
 local AcceptOrDecline = API:WaitForChild("TradeAPI/AcceptOrDeclineTradeRequest")
@@ -11,20 +11,19 @@ local AddItemToOffer = API:WaitForChild("TradeAPI/AddItemToOffer")
 local AcceptNegotiation = API:WaitForChild("TradeAPI/AcceptNegotiation")
 local ConfirmTrade = API:WaitForChild("TradeAPI/ConfirmTrade")
 local RefreshProfile = API:WaitForChild("PlayerProfileAPI/RefreshProfile")
+local SendQuickChat = API:WaitForChild("TradeAPI/SendQuickChat")
 local SuggestionAdded = API:WaitForChild("TradeAPI/SuggestionAdded")
 local SuggestionRemoved = API:WaitForChild("TradeAPI/SuggestionRemoved")
-local SendQuickChat = API:WaitForChild("TradeAPI/SendQuickChat")
 
-local Fsys = require(ReplicatedStorage:WaitForChild("Fsys"))
+-- This fires to YOUR client when the PARTNER accepts negotiation
+local TradeReactedTo = API:WaitForChild("TradeAPI/TradeReactedTo")
+
 local ClientData = Fsys.load("ClientData")
 
 local ITEM_KIND = "sandwich-default"
-local STABLE_TIME = 5 -- seconds after partner adds item before confirming
-local REMIND_INTERVAL = 8 -- seconds between reminders
 
 local currentSender = nil
-local partnerAddedItem = false
-local confirmThread = nil
+local partnerHasItem = false
 local remindThread = nil
 
 local function findSandwichId()
@@ -40,88 +39,82 @@ local function findSandwichId()
     return nil
 end
 
-local function sendChat(message)
-    pcall(function()
-        SendQuickChat:FireServer(message)
-    end)
-    print("[TradeScript] Sent chat: " .. message)
-end
-
-local function cancelTimers()
-    if confirmThread then task.cancel(confirmThread) confirmThread = nil end
-    if remindThread then task.cancel(remindThread) remindThread = nil end
-end
-
-local function startConfirmTimer()
-    if confirmThread then task.cancel(confirmThread) confirmThread = nil end
-
-    confirmThread = task.delay(STABLE_TIME, function()
-        if not currentSender or not partnerAddedItem then return end
-        print("[TradeScript] Offer stable — confirming trade...")
-
-        pcall(function() RefreshProfile:InvokeServer(currentSender) end)
-        task.wait(0.5)
-        pcall(function() AcceptNegotiation:FireServer() end)
-        task.wait(0.8)
-        pcall(function() ConfirmTrade:FireServer() end)
-
-        print("[TradeScript] Trade confirmed with: " .. tostring(currentSender.Name))
-        cancelTimers()
-        currentSender = nil
-        partnerAddedItem = false
-    end)
+local function cancelRemindThread()
+    if remindThread then
+        task.cancel(remindThread)
+        remindThread = nil
+    end
 end
 
 local function startRemindLoop()
-    if remindThread then task.cancel(remindThread) remindThread = nil end
-
+    cancelRemindThread()
     remindThread = task.spawn(function()
-        while currentSender and not partnerAddedItem do
-            task.wait(REMIND_INTERVAL)
-            if not currentSender or partnerAddedItem then break end
-            print("[TradeScript] Partner hasnt added item yet — reminding...")
-            sendChat("Please add an item to the trade!")
+        while currentSender and not partnerHasItem do
+            task.wait(8)
+            if not currentSender or partnerHasItem then break end
+            pcall(function() SendQuickChat:FireServer("Please add an item to the trade!") end)
+            print("[TradeScript] Reminded partner to add an item.")
         end
     end)
 end
 
--- Detect when partner adds an item
+-- Partner added item
 SuggestionAdded.OnClientEvent:Connect(function(...)
     if not currentSender then return end
-    print("[TradeScript] Partner added an item!")
-
-    partnerAddedItem = true
-
-    -- Stop remind loop
-    if remindThread then task.cancel(remindThread) remindThread = nil end
-
-    -- Accept negotiation and start confirm timer
-    task.wait(0.5)
-    pcall(function() AcceptNegotiation:FireServer() end)
-    print("[TradeScript] AcceptNegotiation fired.")
-    startConfirmTimer()
+    partnerHasItem = true
+    cancelRemindThread()
+    print("[TradeScript] Partner added an item — waiting for them to accept...")
 end)
 
--- If partner removes their item, reset and remind again
+-- Partner removed item
 SuggestionRemoved.OnClientEvent:Connect(function(...)
     if not currentSender then return end
-    print("[TradeScript] Partner removed their item — waiting again...")
-
-    partnerAddedItem = false
-    cancelTimers()
-    sendChat("Please add an item to the trade!")
+    partnerHasItem = false
+    print("[TradeScript] Partner removed their item.")
+    pcall(function() SendQuickChat:FireServer("Please add an item to the trade!") end)
     startRemindLoop()
 end)
 
-print("[TradeScript] Ready — watching for trades...")
+-- Partner clicked Accept — NOW we accept and confirm
+TradeReactedTo.OnClientEvent:Connect(function(...)
+    if not currentSender then return end
+    if not partnerHasItem then
+        print("[TradeScript] Partner accepted but has no item — ignoring.")
+        return
+    end
+
+    print("[TradeScript] Partner accepted! Accepting and confirming...")
+    cancelRemindThread()
+
+    task.wait(0.5)
+
+    -- Accept negotiation on our side
+    local ok1 = pcall(function() AcceptNegotiation:FireServer() end)
+    print("[TradeScript] AcceptNegotiation: " .. tostring(ok1))
+
+    task.wait(0.8)
+
+    -- Refresh profile then confirm
+    pcall(function() RefreshProfile:InvokeServer(currentSender) end)
+    task.wait(0.5)
+
+    local ok2 = pcall(function() ConfirmTrade:FireServer() end)
+    print("[TradeScript] ConfirmTrade: " .. tostring(ok2))
+
+    print("[TradeScript] Trade complete with: " .. tostring(currentSender.Name))
+    currentSender = nil
+    partnerHasItem = false
+end)
+
+print("[TradeScript] Ready — waiting for trades...")
 
 TradeRequestReceived.OnClientEvent:Connect(function(sender)
     if not sender then return end
     print("[TradeScript] Trade from: " .. tostring(sender.Name))
 
     currentSender = sender
-    partnerAddedItem = false
-    cancelTimers()
+    partnerHasItem = false
+    cancelRemindThread()
 
     task.wait(0.5)
 
@@ -157,10 +150,9 @@ TradeRequestReceived.OnClientEvent:Connect(function(sender)
         return
     end
 
-    -- Send initial reminder and start remind loop
-    task.wait(0.5)
-    sendChat("Please add an item to the trade!")
+    task.wait(0.3)
+    pcall(function() SendQuickChat:FireServer("Please add an item to the trade!") end)
     startRemindLoop()
 
-    print("[TradeScript] Waiting for partner to add an item...")
+    print("[TradeScript] Waiting for partner to add item and accept...")
 end)
