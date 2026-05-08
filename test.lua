@@ -1,9 +1,10 @@
 -- Auto Trade Script
--- Detects partner accepting via ClientData trade state
+-- Uses ClientData trade state to detect when partner accepts
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local API = ReplicatedStorage:WaitForChild("API")
 local Fsys = require(ReplicatedStorage:WaitForChild("Fsys"))
+local LocalPlayer = game:GetService("Players").LocalPlayer
 
 local AcceptOrDecline = API:WaitForChild("TradeAPI/AcceptOrDeclineTradeRequest")
 local AddItemToOffer = API:WaitForChild("TradeAPI/AddItemToOffer")
@@ -16,10 +17,8 @@ local SuggestionAdded = API:WaitForChild("TradeAPI/SuggestionAdded")
 local SuggestionRemoved = API:WaitForChild("TradeAPI/SuggestionRemoved")
 
 local ClientData = Fsys.load("ClientData")
-local LocalPlayer = game:GetService("Players").LocalPlayer
 
 local ITEM_KIND = "sandwich-default"
-
 local currentSender = nil
 local partnerHasItem = false
 local confirmed = false
@@ -52,7 +51,7 @@ local function startRemindLoop()
             task.wait(8)
             if not currentSender or partnerHasItem then break end
             pcall(function() SendQuickChat:FireServer("Please add an item to the trade!") end)
-            print("[TradeScript] Reminded partner to add an item.")
+            print("[TradeScript] Reminded partner.")
         end
     end)
 end
@@ -61,42 +60,49 @@ local function doConfirm()
     if confirmed or not currentSender then return end
     confirmed = true
     cancelRemind()
-
     local sender = currentSender
-    print("[TradeScript] Partner accepted! Confirming trade...")
-
+    print("[TradeScript] Confirming trade with: " .. tostring(sender.Name))
     task.wait(0.5)
     pcall(function() RefreshProfile:InvokeServer(sender) end)
     task.wait(0.3)
     pcall(function() AcceptNegotiation:FireServer() end)
     task.wait(0.8)
     pcall(function() ConfirmTrade:FireServer() end)
-
-    print("[TradeScript] Trade confirmed with: " .. tostring(sender.Name))
+    print("[TradeScript] Done!")
     currentSender = nil
     partnerHasItem = false
     confirmed = false
 end
 
--- Watch trade state via ClientData — same way the game does internally
+local function getPartnerOffer(tradeState)
+    if not tradeState then return nil end
+    -- From TradeApp source: sender is LocalPlayer = we are sender, partner is recipient
+    if tradeState.sender == LocalPlayer then
+        return tradeState.recipient_offer
+    else
+        return tradeState.sender_offer
+    end
+end
+
+-- Watch trade state exactly like TradeApp does
 ClientData.register_callback_plus_existing("trade", function(newState, oldState)
     if not currentSender then return end
     if not newState then return end
 
-    -- Figure out which offer is the partner's
-    local partnerOffer
-    if newState.sender == LocalPlayer then
-        partnerOffer = newState.recipient_offer
-    else
-        partnerOffer = newState.sender_offer
-    end
+    local partnerOffer = getPartnerOffer(newState)
+    local oldPartnerOffer = getPartnerOffer(oldState)
 
-    if partnerOffer and partnerOffer.negotiated then
-        print("[TradeScript] Detected partner accepted negotiation!")
+    -- Detect the moment partner's negotiated flips to true
+    local partnerJustAccepted = partnerOffer
+        and partnerOffer.negotiated == true
+        and (oldPartnerOffer == nil or oldPartnerOffer.negotiated ~= true)
+
+    if partnerJustAccepted then
+        print("[TradeScript] Partner accepted!")
         if partnerHasItem then
             doConfirm()
         else
-            print("[TradeScript] Partner accepted but no item — waiting for item first.")
+            print("[TradeScript] Partner accepted but no item yet — waiting...")
         end
     end
 end)
@@ -106,16 +112,14 @@ SuggestionAdded.OnClientEvent:Connect(function()
     if not currentSender then return end
     partnerHasItem = true
     cancelRemind()
-    print("[TradeScript] Partner added an item.")
+    print("[TradeScript] Partner added item.")
 
-    -- Check if they already accepted too
-    local ok, tradeState = pcall(function()
-        return ClientData.get("trade")
-    end)
+    -- Check if partner already accepted
+    local ok, tradeState = pcall(function() return ClientData.get("trade") end)
     if ok and tradeState then
-        local partnerOffer = if tradeState.sender == LocalPlayer then tradeState.recipient_offer else tradeState.sender_offer
+        local partnerOffer = getPartnerOffer(tradeState)
         if partnerOffer and partnerOffer.negotiated then
-            print("[TradeScript] Partner already accepted — confirming now!")
+            print("[TradeScript] Partner already accepted — confirming!")
             doConfirm()
         end
     end
@@ -143,7 +147,6 @@ TradeRequestReceived.OnClientEvent:Connect(function(sender)
 
     task.wait(0.5)
 
-    -- Accept trade request
     local ok1, err1 = pcall(function()
         AcceptOrDecline:InvokeServer(sender, true)
     end)
@@ -156,7 +159,6 @@ TradeRequestReceived.OnClientEvent:Connect(function(sender)
 
     task.wait(0.5)
 
-    -- Add sandwich
     local itemId = findSandwichId()
     if not itemId then
         warn("[TradeScript] No sandwich found.")
