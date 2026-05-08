@@ -1,10 +1,10 @@
--- Executor version (no require, hooks RemoteEvents directly)
+-- Executor version (protected, local only)
 
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
+local coreGui = game:GetService("CoreGui")
 
 -- Cleanup old GUI
-local coreGui = game:GetService("CoreGui")
 if coreGui:FindFirstChild("TradeStatusGui") then
     coreGui.TradeStatusGui:Destroy()
 end
@@ -14,7 +14,21 @@ local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "TradeStatusGui"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-screenGui.Parent = coreGui
+
+-- Protect the GUI based on what executor you have
+if syn and syn.protect_gui then
+    syn.protect_gui(screenGui)
+    screenGui.Parent = coreGui
+elseif protect_gui then
+    protect_gui(screenGui)
+    screenGui.Parent = coreGui
+elseif gethui then
+    -- Some executors like Fluxus use gethui()
+    screenGui.Parent = gethui()
+else
+    -- Fallback
+    screenGui.Parent = coreGui
+end
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, 300, 0, 70)
@@ -63,9 +77,8 @@ end
 local prevNegotiated = false
 local prevConfirmed = false
 
--- Find RemoteEvents by crawling the game tree
+-- Find RemoteEvents by crawling ReplicatedStorage
 local function findRemote(name)
-    -- Common locations Adopt Me uses
     local locations = {
         game:GetService("ReplicatedStorage"),
         game:GetService("ReplicatedStorage"):FindFirstChild("new"),
@@ -74,7 +87,7 @@ local function findRemote(name)
     }
     for _, loc in ipairs(locations) do
         if loc then
-            local found = loc:FindFirstChild(name, true) -- true = recursive search
+            local found = loc:FindFirstChild(name, true)
             if found then
                 return found
             end
@@ -126,11 +139,11 @@ hookRemote("TradeUpdated", function(tradeState)
     end
 end)
 
--- Also hook AcceptNegotiation as a backup signal
+-- Backup hook
 hookRemote("AcceptNegotiation", function(player)
     if player and player ~= LocalPlayer then
         showNotification("✅ " .. player.Name .. " accepted!", Color3.fromRGB(34, 139, 34))
     end
 end)
 
-print("[TradeWatcher] Running!")
+print("[TradeWatcher] Running! Only visible to you.")
