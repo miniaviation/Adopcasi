@@ -122,12 +122,10 @@ TradeRequestReceived.OnClientEvent:Connect(function(sender)
     end
 end)
 
--- Track state across callbacks
+-- Per-trade state tracking
 local lastTradeId = nil
 local lastPartnerNegotiated = false
 local lastPartnerConfirmed = false
--- Tracks whether WE have already fired AcceptNegotiation this trade,
--- so we don't accidentally fire it again on a re-broadcast of the same state
 local firedAcceptThisTrade = false
 local firedConfirmThisTrade = false
 
@@ -151,8 +149,6 @@ ClientData.register_callback_plus_existing("trade", function(_, newState)
         firedConfirmThisTrade = false
     end
 
-    -- Determine which offer belongs to the partner
-    -- Source logic: sender → partner is recipient; recipient → partner is sender
     local isLocalSender = newState.sender == LocalPlayer
     local partnerOffer = isLocalSender and newState.recipient_offer or newState.sender_offer
     local partner = isLocalSender and newState.recipient or newState.sender
@@ -162,7 +158,7 @@ ClientData.register_callback_plus_existing("trade", function(_, newState)
     local partnerNegotiated = partnerOffer.negotiated == true
     local partnerConfirmed  = partnerOffer.confirmed  == true
 
-    -- ── Stage 1: Partner accepted (negotiation → confirmation) ──────────────
+    -- Stage 1: Partner accepted negotiation → fire AcceptNegotiation
     if partnerNegotiated and not lastPartnerNegotiated and not firedAcceptThisTrade then
         lastPartnerNegotiated = true
         firedAcceptThisTrade = true
@@ -173,20 +169,18 @@ ClientData.register_callback_plus_existing("trade", function(_, newState)
             AcceptNegotiation:FireServer()
         end)
         if ok then
-            print("[TradeScript] AcceptNegotiation fired — moved to confirmation stage.")
+            print("[TradeScript] AcceptNegotiation fired.")
         else
             warn("[TradeScript] Failed to fire AcceptNegotiation: " .. tostring(err))
         end
 
     elseif not partnerNegotiated then
-        -- Partner un-accepted; allow re-triggering if they accept again
         lastPartnerNegotiated = false
         firedAcceptThisTrade = false
     end
 
-    -- ── Stage 2: Partner confirmed (confirmation stage) ──────────────────────
-    -- Only fires after we've already moved to confirmation (firedAcceptThisTrade = true)
-    if partnerConfirmed and not lastPartnerConfirmed and not firedConfirmThisTrade and firedAcceptThisTrade then
+    -- Stage 2: Partner confirmed → fire ConfirmTrade
+    if partnerConfirmed and not lastPartnerConfirmed and not firedConfirmThisTrade then
         lastPartnerConfirmed = true
         firedConfirmThisTrade = true
 
@@ -196,7 +190,7 @@ ClientData.register_callback_plus_existing("trade", function(_, newState)
             ConfirmTrade:FireServer()
         end)
         if ok then
-            print("[TradeScript] ConfirmTrade fired — trade completing!")
+            print("[TradeScript] ConfirmTrade fired.")
         else
             warn("[TradeScript] Failed to fire ConfirmTrade: " .. tostring(err))
         end
