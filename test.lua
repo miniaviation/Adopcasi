@@ -1,149 +1,119 @@
--- Executor version (protected, local only)
+-- LocalScript in StarterPlayerScripts
 
 local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
-local coreGui = game:GetService("CoreGui")
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
--- Cleanup old GUI
-if coreGui:FindFirstChild("TradeStatusGui") then
-    coreGui.TradeStatusGui:Destroy()
-end
-
--- Build GUI
+-- GUI
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "TradeStatusGui"
+screenGui.Name = "TradeAcceptGui"
 screenGui.ResetOnSpawn = false
-screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-
--- Protect the GUI based on what executor you have
-if syn and syn.protect_gui then
-    syn.protect_gui(screenGui)
-    screenGui.Parent = coreGui
-elseif protect_gui then
-    protect_gui(screenGui)
-    screenGui.Parent = coreGui
-elseif gethui then
-    -- Some executors like Fluxus use gethui()
-    screenGui.Parent = gethui()
-else
-    -- Fallback
-    screenGui.Parent = coreGui
-end
+screenGui.Parent = PlayerGui
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 300, 0, 70)
-frame.Position = UDim2.new(0.5, -150, 0, 20)
-frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-frame.BackgroundTransparency = 0.2
+frame.Size = UDim2.new(0, 300, 0, 75)
+frame.Position = UDim2.new(0.5, -150, 0, -90)
+frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 frame.BorderSizePixel = 0
-frame.Visible = false
 frame.Parent = screenGui
 
-local corner = Instance.new("UICorner")
-corner.CornerRadius = UDim.new(0, 12)
-corner.Parent = frame
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 12)
 
-local stroke = Instance.new("UIStroke")
+local stroke = Instance.new("UIStroke", frame)
+stroke.Color = Color3.fromRGB(100, 220, 120)
 stroke.Thickness = 2
-stroke.Color = Color3.fromRGB(255, 255, 255)
-stroke.Transparency = 0.7
-stroke.Parent = frame
 
-local label = Instance.new("TextLabel")
-label.Size = UDim2.new(1, -20, 1, 0)
-label.Position = UDim2.new(0, 10, 0, 0)
+local label = Instance.new("TextLabel", frame)
+label.Size = UDim2.new(1, -16, 0.6, 0)
+label.Position = UDim2.new(0, 8, 0.05, 0)
 label.BackgroundTransparency = 1
-label.TextColor3 = Color3.fromRGB(255, 255, 255)
+label.TextColor3 = Color3.fromRGB(100, 220, 120)
 label.TextScaled = true
 label.Font = Enum.Font.GothamBold
-label.Text = ""
-label.Parent = frame
+label.TextXAlignment = Enum.TextXAlignment.Left
 
--- Notification logic
-local hideThread = nil
-local function showNotification(text, color)
-    if hideThread then
-        task.cancel(hideThread)
-    end
-    label.Text = text
-    frame.BackgroundColor3 = color or Color3.fromRGB(30, 30, 30)
-    frame.Visible = true
-    hideThread = task.delay(4, function()
-        frame.Visible = false
-    end)
+local timeLabel = Instance.new("TextLabel", frame)
+timeLabel.Size = UDim2.new(1, -16, 0.35, 0)
+timeLabel.Position = UDim2.new(0, 8, 0.62, 0)
+timeLabel.BackgroundTransparency = 1
+timeLabel.TextColor3 = Color3.fromRGB(160, 160, 160)
+timeLabel.TextScaled = true
+timeLabel.Font = Enum.Font.Gotham
+timeLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local isShowing = false
+
+local function showNotif(partnerName)
+    -- Always stamp the time at the exact moment of triggering
+    label.Text = "✅ " .. partnerName .. " accepted!"
+    timeLabel.Text = "At " .. os.date("%H:%M:%S")
+
+    if isShowing then return end
+    isShowing = true
+
+    TweenService:Create(frame, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+        Position = UDim2.new(0.5, -150, 0, 20)
+    }):Play()
+
+    task.wait(4)
+
+    TweenService:Create(frame, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+        Position = UDim2.new(0.5, -150, 0, -90)
+    }):Play()
+
+    task.wait(0.35)
+    isShowing = false
 end
 
--- Track state
-local prevNegotiated = false
-local prevConfirmed = false
+-- Hook into the game's own ClientData trade callback,
+-- exactly how the TradeApp does it internally
+local ok, Fsys = pcall(function()
+    return require(ReplicatedStorage:WaitForChild("Fsys", 5))
+end)
 
--- Find RemoteEvents by crawling ReplicatedStorage
-local function findRemote(name)
-    local locations = {
-        game:GetService("ReplicatedStorage"),
-        game:GetService("ReplicatedStorage"):FindFirstChild("new"),
-        game:GetService("ReplicatedStorage"):FindFirstChild("Remotes"),
-        game:GetService("ReplicatedStorage"):FindFirstChild("Events"),
-    }
-    for _, loc in ipairs(locations) do
-        if loc then
-            local found = loc:FindFirstChild(name, true)
-            if found then
-                return found
-            end
-        end
-    end
-    return nil
+if not ok or not Fsys then
+    warn("Could not load Fsys")
+    return
 end
 
--- Hook a RemoteEvent safely
-local function hookRemote(name, callback)
-    task.spawn(function()
-        local remote = findRemote(name)
-        if remote then
-            print("[TradeWatcher] Hooked:", name)
-            remote.OnClientEvent:Connect(callback)
-        else
-            warn("[TradeWatcher] Could not find remote:", name)
-        end
-    end)
-end
+local ClientData = Fsys.load("ClientData")
 
--- Hook trade state updates
-hookRemote("TradeUpdated", function(tradeState)
-    if not tradeState then
-        prevNegotiated = false
-        prevConfirmed = false
+local lastTradeId = nil
+local lastPartnerNegotiated = false
+
+-- This mirrors exactly how v1.register_callback_plus_existing("trade") works in the source
+ClientData.register_callback_plus_existing("trade", function(_, newState)
+    if newState == nil then
+        -- Trade ended, reset everything
+        lastTradeId = nil
+        lastPartnerNegotiated = false
         return
     end
 
-    local isLocalSender = tradeState.sender == LocalPlayer
-    local partnerOffer = isLocalSender and tradeState.recipient_offer or tradeState.sender_offer
-    local partner = isLocalSender and tradeState.recipient or tradeState.sender
-    local partnerName = (partner and partner.Name) or "Partner"
-
-    if not partnerOffer then return end
-
-    if partnerOffer.negotiated and not prevNegotiated then
-        prevNegotiated = true
-        showNotification("✅ " .. partnerName .. " accepted!", Color3.fromRGB(34, 139, 34))
-    elseif not partnerOffer.negotiated then
-        prevNegotiated = false
+    -- New trade started — reset tracking so old state can't bleed in
+    if newState.trade_id ~= lastTradeId then
+        lastTradeId = newState.trade_id
+        lastPartnerNegotiated = false
     end
 
-    if partnerOffer.confirmed and not prevConfirmed then
-        prevConfirmed = true
-        showNotification("🔒 " .. partnerName .. " confirmed!", Color3.fromRGB(30, 100, 200))
-    elseif not partnerOffer.confirmed then
-        prevConfirmed = false
-    end
-end)
+    -- Determine partner offer the same way _get_partner_offer does in source:
+    -- If LocalPlayer is sender → partner offer is recipient_offer
+    -- If LocalPlayer is recipient → partner offer is sender_offer
+    local isLocalSender = newState.sender == LocalPlayer
+    local partnerOffer = isLocalSender and newState.recipient_offer or newState.sender_offer
+    local partner = isLocalSender and newState.recipient or newState.sender
 
--- Backup hook
-hookRemote("AcceptNegotiation", function(player)
-    if player and player ~= LocalPlayer then
-        showNotification("✅ " .. player.Name .. " accepted!", Color3.fromRGB(34, 139, 34))
+    if not partnerOffer or not partner then return end
+
+    local partnerNegotiated = partnerOffer.negotiated == true
+
+    -- Only fire if partner JUST flipped to accepted this callback
+    if partnerNegotiated and not lastPartnerNegotiated then
+        lastPartnerNegotiated = true
+        task.spawn(showNotif, partner.Name)
+    elseif not partnerNegotiated then
+        lastPartnerNegotiated = false
     end
 end)
-
-print("[TradeWatcher] Running! Only visible to you.")
