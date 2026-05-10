@@ -1,201 +1,250 @@
 local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
--- API Remotes
-local API = ReplicatedStorage:WaitForChild("API")
-local TradeRequestReceived = API:WaitForChild("TradeAPI/TradeRequestReceived")
-local AcceptOrDecline = API:WaitForChild("TradeAPI/AcceptOrDeclineTradeRequest")
-local AddItemToOffer = API:WaitForChild("TradeAPI/AddItemToOffer")
-local AcceptNegotiation = API:WaitForChild("TradeAPI/AcceptNegotiation")
-local ConfirmTrade = API:WaitForChild("TradeAPI/ConfirmTrade")
+local lastTradeState = nil
 
-local Fsys = require(ReplicatedStorage:WaitForChild("Fsys"))
-local ClientData = Fsys.load("ClientData")
-
-local ITEM_KIND = "sandwich-default"
-
--- GUI setup
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "TradeAcceptGui"
-screenGui.ResetOnSpawn = false
-screenGui.Parent = PlayerGui
-
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 300, 0, 75)
-frame.Position = UDim2.new(0.5, -150, 0, -90)
-frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-frame.BorderSizePixel = 0
-frame.Parent = screenGui
-Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 12)
-
-local stroke = Instance.new("UIStroke", frame)
-stroke.Color = Color3.fromRGB(100, 220, 120)
-stroke.Thickness = 2
-
-local label = Instance.new("TextLabel", frame)
-label.Size = UDim2.new(1, -16, 0.6, 0)
-label.Position = UDim2.new(0, 8, 0.05, 0)
-label.BackgroundTransparency = 1
-label.TextColor3 = Color3.fromRGB(100, 220, 120)
-label.TextScaled = true
-label.Font = Enum.Font.GothamBold
-label.TextXAlignment = Enum.TextXAlignment.Left
-
-local timeLabel = Instance.new("TextLabel", frame)
-timeLabel.Size = UDim2.new(1, -16, 0.35, 0)
-timeLabel.Position = UDim2.new(0, 8, 0.62, 0)
-timeLabel.BackgroundTransparency = 1
-timeLabel.TextColor3 = Color3.fromRGB(160, 160, 160)
-timeLabel.TextScaled = true
-timeLabel.Font = Enum.Font.Gotham
-timeLabel.TextXAlignment = Enum.TextXAlignment.Left
-
-local isShowing = false
-local function showNotif(text)
-    label.Text = text
-    timeLabel.Text = "At " .. os.date("%H:%M:%S")
-    if isShowing then return end
-    isShowing = true
-    TweenService:Create(frame, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
-        Position = UDim2.new(0.5, -150, 0, 20)
-    }):Play()
-    task.wait(4)
-    TweenService:Create(frame, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
-        Position = UDim2.new(0.5, -150, 0, -90)
-    }):Play()
-    task.wait(0.35)
-    isShowing = false
+local function getItemDB()
+    local ok, db = pcall(function()
+        return require(game.ReplicatedStorage:WaitForChild("Fsys")).load("ItemDB")
+    end)
+    return ok and db or {}
 end
 
--- Sandwich helpers
-local function findSandwichId()
-    local ok, inventory = pcall(function()
-        return ClientData.get("inventory")
-    end)
-    if not ok or not inventory or not inventory.food then
-        warn("[TradeScript] Could not access inventory.")
-        return nil
-    end
-    for id, item in pairs(inventory.food) do
-        if tostring(item.kind) == ITEM_KIND then
-            return tostring(id)
-        end
-    end
-    warn("[TradeScript] Sandwich not found in inventory.")
-    return nil
-end
-
--- Auto-accept incoming trade requests and add sandwich
-print("[TradeScript] Ready — auto accepting all trades and adding Sandwich.")
-TradeRequestReceived.OnClientEvent:Connect(function(sender)
-    if not sender then return end
-    print("[TradeScript] Trade request from: " .. tostring(sender.Name))
-    task.wait(0.5)
-
-    local ok1, err1 = pcall(function()
-        AcceptOrDecline:InvokeServer(sender, true)
-    end)
-    if not ok1 then
-        warn("[TradeScript] Failed to accept: " .. tostring(err1))
-        return
-    end
-    print("[TradeScript] Accepted trade with: " .. sender.Name)
-    task.wait(0.5)
-
-    local itemId = findSandwichId()
-    if not itemId then
-        warn("[TradeScript] No sandwich found — skipping offer.")
-        return
-    end
-    task.wait(0.3)
-
-    local ok2, err2 = pcall(function()
-        AddItemToOffer:FireServer(itemId)
-    end)
-    if ok2 then
-        print("[TradeScript] Sandwich added to offer! ID: " .. itemId)
+local function getPartnerName(state)
+    if state.sender == LocalPlayer then
+        return state.recipient and state.recipient.Name or "Unknown"
     else
-        warn("[TradeScript] Failed to add sandwich: " .. tostring(err2))
+        return state.sender and state.sender.Name or "Unknown"
     end
-end)
+end
 
--- Per-trade state tracking
-local lastTradeId = nil
-local lastPartnerNegotiated = false
-local lastPartnerConfirmed = false
-local firedAcceptThisTrade = false
-local firedConfirmThisTrade = false
+local function getPartnerItems(state)
+    if state.sender == LocalPlayer then
+        return state.recipient_offer and state.recipient_offer.items or {}
+    else
+        return state.sender_offer and state.sender_offer.items or {}
+    end
+end
 
-ClientData.register_callback_plus_existing("trade", function(_, newState)
-    -- Trade ended — full reset
-    if newState == nil then
-        lastTradeId = nil
-        lastPartnerNegotiated = false
-        lastPartnerConfirmed = false
-        firedAcceptThisTrade = false
-        firedConfirmThisTrade = false
+local function showGui(partnerName, items, ItemDB)
+    local existing = PlayerGui:FindFirstChild("TradeResultGui")
+    if existing then existing:Destroy() end
+
+    -- Build item lines first so we know how tall to make the frame
+    local lines = {}
+    for _, item in ipairs(items) do
+        local itemData = ItemDB[item.category] and ItemDB[item.category][item.kind]
+        local name = (itemData and itemData.name) or item.kind or "Unknown"
+
+        local tags = {}
+        if item.properties then
+            if item.properties.mega_neon then
+                table.insert(tags, "Mega Neon")
+            elseif item.properties.neon then
+                table.insert(tags, "Neon")
+            end
+            if item.properties.flyable  then table.insert(tags, "Fly")  end
+            if item.properties.rideable then table.insert(tags, "Ride") end
+        end
+
+        local label = name
+        if #tags > 0 then
+            label = label .. "  [" .. table.concat(tags, ", ") .. "]"
+        end
+
+        table.insert(lines, label)
+    end
+
+    if #lines == 0 then
+        table.insert(lines, "No items")
+    end
+
+    -- Layout constants
+    local PADDING        = 16
+    local TITLE_H        = 48
+    local PARTNER_H      = 32
+    local DIVIDER_H      = 8
+    local ROW_H          = 30
+    local BUTTON_H       = 38
+    local FRAME_W        = 340
+
+    local totalH = PADDING + TITLE_H + PARTNER_H + DIVIDER_H + (#lines * ROW_H) + DIVIDER_H + BUTTON_H + PADDING
+
+    -- ScreenGui
+    local sg = Instance.new("ScreenGui")
+    sg.Name            = "TradeResultGui"
+    sg.ResetOnSpawn    = false
+    sg.DisplayOrder    = 999
+    sg.IgnoreGuiInset  = true
+    sg.Parent          = PlayerGui
+
+    -- Main frame
+    local frame = Instance.new("Frame")
+    frame.Size            = UDim2.fromOffset(FRAME_W, totalH)
+    frame.AnchorPoint     = Vector2.new(0.5, 0.5)
+    frame.Position        = UDim2.new(0.5, 0, 0.5, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+    frame.BorderSizePixel = 0
+    frame.Parent          = sg
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 14)
+    corner.Parent = frame
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color     = Color3.fromRGB(100, 180, 255)
+    stroke.Thickness = 2
+    stroke.Parent    = frame
+
+    -- Use a UIListLayout so everything stacks cleanly
+    local list = Instance.new("UIListLayout")
+    list.SortOrder        = Enum.SortOrder.LayoutOrder
+    list.Padding          = UDim.new(0, 0)
+    list.Parent           = frame
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingLeft   = UDim.new(0, PADDING)
+    padding.PaddingRight  = UDim.new(0, PADDING)
+    padding.PaddingTop    = UDim.new(0, PADDING)
+    padding.PaddingBottom = UDim.new(0, PADDING)
+    padding.Parent        = frame
+
+    local function makeLabel(text, textSize, color, height, bold, order)
+        local lbl = Instance.new("TextLabel")
+        lbl.Size               = UDim2.new(1, 0, 0, height)
+        lbl.BackgroundTransparency = 1
+        lbl.Text               = text
+        lbl.TextColor3         = color
+        lbl.TextSize           = textSize
+        lbl.Font               = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+        lbl.TextXAlignment     = Enum.TextXAlignment.Left
+        lbl.TextTruncate       = Enum.TextTruncate.AtEnd
+        lbl.LayoutOrder        = order
+        lbl.Parent             = frame
+        return lbl
+    end
+
+    local function makeDivider(order)
+        local d = Instance.new("Frame")
+        d.Size                 = UDim2.new(1, 0, 0, 1)
+        d.BackgroundColor3     = Color3.fromRGB(60, 60, 70)
+        d.BorderSizePixel      = 0
+        d.LayoutOrder          = order
+        d.Parent               = frame
+
+        -- Wrap in a spacer so the padding above/below the line is part of layout
+        local spacer = Instance.new("Frame")
+        spacer.Size                = UDim2.new(1, 0, 0, DIVIDER_H * 2 + 1)
+        spacer.BackgroundTransparency = 1
+        spacer.BorderSizePixel     = 0
+        spacer.LayoutOrder         = order
+        spacer.Parent              = frame
+        d.Parent                   = spacer
+        d.Position                 = UDim2.new(0, 0, 0.5, 0)
+        d.Size                     = UDim2.new(1, 0, 0, 1)
+        return spacer
+    end
+
+    -- Title
+    makeLabel("✔  Trade Complete!", 20, Color3.fromRGB(100, 200, 255), TITLE_H, true, 1)
+
+    -- Partner line  e.g.  "Traded with:  PlayerName"
+    local partnerRow = Instance.new("Frame")
+    partnerRow.Size                = UDim2.new(1, 0, 0, PARTNER_H)
+    partnerRow.BackgroundTransparency = 1
+    partnerRow.BorderSizePixel     = 0
+    partnerRow.LayoutOrder         = 2
+    partnerRow.Parent              = frame
+
+    local tradedWith = Instance.new("TextLabel")
+    tradedWith.Size            = UDim2.new(0, 110, 1, 0)
+    tradedWith.BackgroundTransparency = 1
+    tradedWith.Text            = "Traded with:"
+    tradedWith.TextColor3      = Color3.fromRGB(150, 150, 160)
+    tradedWith.TextSize        = 15
+    tradedWith.Font            = Enum.Font.Gotham
+    tradedWith.TextXAlignment  = Enum.TextXAlignment.Left
+    tradedWith.Parent          = partnerRow
+
+    local partnerNameLbl = Instance.new("TextLabel")
+    partnerNameLbl.Size            = UDim2.new(1, -115, 1, 0)
+    partnerNameLbl.Position        = UDim2.new(0, 115, 0, 0)
+    partnerNameLbl.BackgroundTransparency = 1
+    partnerNameLbl.Text            = partnerName
+    partnerNameLbl.TextColor3      = Color3.fromRGB(255, 220, 80)   -- gold for the name
+    partnerNameLbl.TextSize        = 16
+    partnerNameLbl.Font            = Enum.Font.GothamBold
+    partnerNameLbl.TextXAlignment  = Enum.TextXAlignment.Left
+    partnerNameLbl.TextTruncate    = Enum.TextTruncate.AtEnd
+    partnerNameLbl.Parent          = partnerRow
+
+    -- Divider
+    makeDivider(3)
+
+    -- "They gave you:" header
+    makeLabel("They gave you:", 14, Color3.fromRGB(140, 140, 150), 24, false, 4)
+
+    -- Item rows
+    for i, line in ipairs(lines) do
+        local row = makeLabel("  •  " .. line, 15, Color3.fromRGB(235, 235, 235), ROW_H, false, 4 + i)
+        row.RichText = false
+    end
+
+    -- Divider before button
+    makeDivider(100)
+
+    -- Close button
+    local btn = Instance.new("TextButton")
+    btn.Size               = UDim2.new(1, 0, 0, BUTTON_H)
+    btn.BackgroundColor3   = Color3.fromRGB(40, 120, 220)
+    btn.TextColor3         = Color3.fromRGB(255, 255, 255)
+    btn.Text               = "Close"
+    btn.Font               = Enum.Font.GothamBold
+    btn.TextSize           = 15
+    btn.BorderSizePixel    = 0
+    btn.LayoutOrder        = 200
+    btn.Parent             = frame
+
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+
+    btn.MouseButton1Click:Connect(function()
+        sg:Destroy()
+    end)
+
+    -- Auto dismiss after 30 seconds
+    task.delay(30, function()
+        if sg and sg.Parent then
+            sg:Destroy()
+        end
+    end)
+end
+
+-- Hook into trade data
+task.spawn(function()
+    local ok, ClientData = pcall(function()
+        return require(game.ReplicatedStorage:WaitForChild("Fsys")).load("ClientData")
+    end)
+
+    if not ok or not ClientData then
+        warn("[TradeResult] Failed to load ClientData")
         return
     end
 
-    -- New trade started — reset per-trade flags
-    if newState.trade_id ~= lastTradeId then
-        lastTradeId = newState.trade_id
-        lastPartnerNegotiated = false
-        lastPartnerConfirmed = false
-        firedAcceptThisTrade = false
-        firedConfirmThisTrade = false
-    end
+    local ok2, ItemDB = pcall(function()
+        return require(game.ReplicatedStorage:WaitForChild("Fsys")).load("ItemDB")
+    end)
 
-    local isLocalSender = newState.sender == LocalPlayer
-    local partnerOffer = isLocalSender and newState.recipient_offer or newState.sender_offer
-    local partner = isLocalSender and newState.recipient or newState.sender
+    local safeItemDB = ok2 and ItemDB or {}
 
-    if not partnerOffer or not partner then return end
-
-    local partnerNegotiated = partnerOffer.negotiated == true
-    local partnerConfirmed  = partnerOffer.confirmed  == true
-
-    -- Stage 1: Partner accepted negotiation → fire AcceptNegotiation
-    if partnerNegotiated and not lastPartnerNegotiated and not firedAcceptThisTrade then
-        lastPartnerNegotiated = true
-        firedAcceptThisTrade = true
-
-        task.spawn(showNotif, "✅ " .. partner.Name .. " accepted!")
-
-        local ok, err = pcall(function()
-            AcceptNegotiation:FireServer()
-        end)
-        if ok then
-            print("[TradeScript] AcceptNegotiation fired.")
-        else
-            warn("[TradeScript] Failed to fire AcceptNegotiation: " .. tostring(err))
+    ClientData.register_callback_plus_existing("trade", function(_, newState)
+        if newState == nil and lastTradeState ~= nil then
+            if lastTradeState.current_stage == "confirmation" then
+                local partnerName = getPartnerName(lastTradeState)
+                local items       = getPartnerItems(lastTradeState)
+                showGui(partnerName, items, safeItemDB)
+            end
         end
-
-    elseif not partnerNegotiated then
-        lastPartnerNegotiated = false
-        firedAcceptThisTrade = false
-    end
-
-    -- Stage 2: Partner confirmed → fire ConfirmTrade
-    if partnerConfirmed and not lastPartnerConfirmed and not firedConfirmThisTrade then
-        lastPartnerConfirmed = true
-        firedConfirmThisTrade = true
-
-        task.spawn(showNotif, "🤝 " .. partner.Name .. " confirmed!")
-
-        local ok, err = pcall(function()
-            ConfirmTrade:FireServer()
-        end)
-        if ok then
-            print("[TradeScript] ConfirmTrade fired.")
-        else
-            warn("[TradeScript] Failed to fire ConfirmTrade: " .. tostring(err))
-        end
-
-    elseif not partnerConfirmed then
-        lastPartnerConfirmed = false
-    end
+        lastTradeState = newState
+    end)
 end)
