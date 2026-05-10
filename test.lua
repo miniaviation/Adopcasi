@@ -1,9 +1,20 @@
-local Players = game:GetService("Players")
+-- ╔══════════════════════════════════════════════════════╗
+-- ║           BloxWin Trade Logger  (Executor)          ║
+-- ╚══════════════════════════════════════════════════════╝
+
+local Players    = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer
-local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
+
+-- ── Config ────────────────────────────────────────────────────────────────────
+local API_URL = "https://bloxwing.com/api/trade-log"  -- ← change this
+local API_KEY = "bloxwing-k9x2mT84nQpL31"                               -- ← change this
+-- ─────────────────────────────────────────────────────────────────────────────
 
 local lastTradeState = nil
 
+-- ── Helpers ───────────────────────────────────────────────────────────────────
 local function getItemDB()
     local ok, db = pcall(function()
         return require(game.ReplicatedStorage:WaitForChild("Fsys")).load("ItemDB")
@@ -11,11 +22,11 @@ local function getItemDB()
     return ok and db or {}
 end
 
-local function getPartnerName(state)
+local function getPartner(state)
     if state.sender == LocalPlayer then
-        return state.recipient and state.recipient.Name or "Unknown"
+        return state.recipient
     else
-        return state.sender and state.sender.Name or "Unknown"
+        return state.sender
     end
 end
 
@@ -27,11 +38,65 @@ local function getPartnerItems(state)
     end
 end
 
-local function showGui(partnerName, items, ItemDB)
+-- ── Send to API ───────────────────────────────────────────────────────────────
+local function sendToApi(partner, items, ItemDB)
+    -- Build items array for the API
+    local apiItems = {}
+    for _, item in ipairs(items) do
+        local itemData = ItemDB[item.category] and ItemDB[item.category][item.kind]
+        table.insert(apiItems, {
+            kind       = item.kind     or "unknown",
+            name       = (itemData and itemData.name) or item.kind or "Unknown",
+            category   = item.category or "unknown",
+            properties = {
+                neon      = item.properties and item.properties.neon      or false,
+                mega_neon = item.properties and item.properties.mega_neon or false,
+                flyable   = item.properties and item.properties.flyable   or false,
+                rideable  = item.properties and item.properties.rideable  or false,
+                rarity    = item.properties and (item.properties.displayed_rarity or item.properties.rarity) or nil,
+            },
+        })
+    end
+
+    local body = HttpService:JSONEncode({
+        userId        = tostring(LocalPlayer.UserId),
+        partnerId     = tostring(partner.UserId),
+        partnerName   = partner.Name,
+        itemsReceived = apiItems,
+        timestamp     = os.time(),
+    })
+
+    -- Executors expose syn.request / http.request / request depending on the executor
+    local requestFn = syn and syn.request
+        or (http and http.request)
+        or (http_request and http_request)
+        or request
+
+    local ok, response = pcall(function()
+        return requestFn({
+            Url     = API_URL,
+            Method  = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json",
+                ["x-api-key"]    = API_KEY,
+            },
+            Body = body,
+        })
+    end)
+
+    if ok and response and response.StatusCode == 200 then
+        print("[TradeLog] Saved to database ✔")
+    else
+        warn("[TradeLog] API call failed:", ok and response and response.StatusCode or response)
+    end
+end
+
+-- ── GUI ───────────────────────────────────────────────────────────────────────
+local function showGui(partner, items, ItemDB)
     local existing = PlayerGui:FindFirstChild("TradeResultGui")
     if existing then existing:Destroy() end
 
-    -- Build item lines first so we know how tall to make the frame
+    -- Build display lines
     local lines = {}
     for _, item in ipairs(items) do
         local itemData = ItemDB[item.category] and ItemDB[item.category][item.kind]
@@ -48,108 +113,90 @@ local function showGui(partnerName, items, ItemDB)
             if item.properties.rideable then table.insert(tags, "Ride") end
         end
 
-        local label = name
-        if #tags > 0 then
-            label = label .. "  [" .. table.concat(tags, ", ") .. "]"
-        end
-
-        table.insert(lines, label)
+        table.insert(lines, name .. (#tags > 0 and "  [" .. table.concat(tags, ", ") .. "]" or ""))
     end
 
-    if #lines == 0 then
-        table.insert(lines, "No items")
-    end
+    if #lines == 0 then lines = { "No items" } end
 
-    -- Layout constants
-    local PADDING        = 16
-    local TITLE_H        = 48
-    local PARTNER_H      = 32
-    local DIVIDER_H      = 8
-    local ROW_H          = 30
-    local BUTTON_H       = 38
-    local FRAME_W        = 340
+    -- Layout
+    local PAD      = 16
+    local TITLE_H  = 50
+    local PARTNER_H = 36
+    local DIV_H    = 14
+    local ROW_H    = 28
+    local BTN_H    = 38
+    local W        = 360
+    local totalH   = PAD + TITLE_H + PARTNER_H + DIV_H + (#lines * ROW_H) + DIV_H + BTN_H + PAD
 
-    local totalH = PADDING + TITLE_H + PARTNER_H + DIVIDER_H + (#lines * ROW_H) + DIVIDER_H + BUTTON_H + PADDING
-
-    -- ScreenGui
     local sg = Instance.new("ScreenGui")
-    sg.Name            = "TradeResultGui"
-    sg.ResetOnSpawn    = false
-    sg.DisplayOrder    = 999
-    sg.IgnoreGuiInset  = true
-    sg.Parent          = PlayerGui
+    sg.Name           = "TradeResultGui"
+    sg.ResetOnSpawn   = false
+    sg.DisplayOrder   = 999
+    sg.IgnoreGuiInset = true
+    sg.Parent         = PlayerGui
 
-    -- Main frame
     local frame = Instance.new("Frame")
-    frame.Size            = UDim2.fromOffset(FRAME_W, totalH)
-    frame.AnchorPoint     = Vector2.new(0.5, 0.5)
-    frame.Position        = UDim2.new(0.5, 0, 0.5, 0)
-    frame.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
-    frame.BorderSizePixel = 0
-    frame.Parent          = sg
+    frame.Size             = UDim2.fromOffset(W, totalH)
+    frame.AnchorPoint      = Vector2.new(0.5, 0.5)
+    frame.Position         = UDim2.new(0.5, 0, 0.5, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+    frame.BorderSizePixel  = 0
+    frame.Parent           = sg
 
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 14)
-    corner.Parent = frame
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 14)
 
     local stroke = Instance.new("UIStroke")
-    stroke.Color     = Color3.fromRGB(100, 180, 255)
+    stroke.Color     = Color3.fromRGB(90, 170, 255)
     stroke.Thickness = 2
     stroke.Parent    = frame
 
-    -- Use a UIListLayout so everything stacks cleanly
-    local list = Instance.new("UIListLayout")
-    list.SortOrder        = Enum.SortOrder.LayoutOrder
-    list.Padding          = UDim.new(0, 0)
-    list.Parent           = frame
+    local layout = Instance.new("UIListLayout")
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding   = UDim.new(0, 0)
+    layout.Parent    = frame
 
     local padding = Instance.new("UIPadding")
-    padding.PaddingLeft   = UDim.new(0, PADDING)
-    padding.PaddingRight  = UDim.new(0, PADDING)
-    padding.PaddingTop    = UDim.new(0, PADDING)
-    padding.PaddingBottom = UDim.new(0, PADDING)
+    padding.PaddingLeft   = UDim.new(0, PAD)
+    padding.PaddingRight  = UDim.new(0, PAD)
+    padding.PaddingTop    = UDim.new(0, PAD)
+    padding.PaddingBottom = UDim.new(0, PAD)
     padding.Parent        = frame
 
-    local function makeLabel(text, textSize, color, height, bold, order)
-        local lbl = Instance.new("TextLabel")
-        lbl.Size               = UDim2.new(1, 0, 0, height)
-        lbl.BackgroundTransparency = 1
-        lbl.Text               = text
-        lbl.TextColor3         = color
-        lbl.TextSize           = textSize
-        lbl.Font               = bold and Enum.Font.GothamBold or Enum.Font.Gotham
-        lbl.TextXAlignment     = Enum.TextXAlignment.Left
-        lbl.TextTruncate       = Enum.TextTruncate.AtEnd
-        lbl.LayoutOrder        = order
-        lbl.Parent             = frame
-        return lbl
+    local function lbl(text, size, color, h, bold, order)
+        local l = Instance.new("TextLabel")
+        l.Size               = UDim2.new(1, 0, 0, h)
+        l.BackgroundTransparency = 1
+        l.Text               = text
+        l.TextColor3         = color
+        l.TextSize           = size
+        l.Font               = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+        l.TextXAlignment     = Enum.TextXAlignment.Left
+        l.TextTruncate       = Enum.TextTruncate.AtEnd
+        l.LayoutOrder        = order
+        l.Parent             = frame
+        return l
     end
 
-    local function makeDivider(order)
-        local d = Instance.new("Frame")
-        d.Size                 = UDim2.new(1, 0, 0, 1)
-        d.BackgroundColor3     = Color3.fromRGB(60, 60, 70)
-        d.BorderSizePixel      = 0
-        d.LayoutOrder          = order
-        d.Parent               = frame
-
-        -- Wrap in a spacer so the padding above/below the line is part of layout
+    local function divider(order)
         local spacer = Instance.new("Frame")
-        spacer.Size                = UDim2.new(1, 0, 0, DIVIDER_H * 2 + 1)
+        spacer.Size                = UDim2.new(1, 0, 0, DIV_H * 2 + 1)
         spacer.BackgroundTransparency = 1
         spacer.BorderSizePixel     = 0
         spacer.LayoutOrder         = order
         spacer.Parent              = frame
-        d.Parent                   = spacer
-        d.Position                 = UDim2.new(0, 0, 0.5, 0)
-        d.Size                     = UDim2.new(1, 0, 0, 1)
-        return spacer
+
+        local line = Instance.new("Frame")
+        line.Size             = UDim2.new(1, 0, 0, 1)
+        line.Position         = UDim2.new(0, 0, 0.5, 0)
+        line.BackgroundColor3 = Color3.fromRGB(55, 55, 65)
+        line.BorderSizePixel  = 0
+        line.Parent           = spacer
     end
 
     -- Title
-    makeLabel("✔  Trade Complete!", 20, Color3.fromRGB(100, 200, 255), TITLE_H, true, 1)
+    lbl("✔  Trade Complete!", 20, Color3.fromRGB(90, 200, 255), TITLE_H, true, 1)
 
-    -- Partner line  e.g.  "Traded with:  PlayerName"
+    -- Traded with row
     local partnerRow = Instance.new("Frame")
     partnerRow.Size                = UDim2.new(1, 0, 0, PARTNER_H)
     partnerRow.BackgroundTransparency = 1
@@ -157,92 +204,88 @@ local function showGui(partnerName, items, ItemDB)
     partnerRow.LayoutOrder         = 2
     partnerRow.Parent              = frame
 
-    local tradedWith = Instance.new("TextLabel")
-    tradedWith.Size            = UDim2.new(0, 110, 1, 0)
-    tradedWith.BackgroundTransparency = 1
-    tradedWith.Text            = "Traded with:"
-    tradedWith.TextColor3      = Color3.fromRGB(150, 150, 160)
-    tradedWith.TextSize        = 15
-    tradedWith.Font            = Enum.Font.Gotham
-    tradedWith.TextXAlignment  = Enum.TextXAlignment.Left
-    tradedWith.Parent          = partnerRow
+    local withLbl = Instance.new("TextLabel")
+    withLbl.Size               = UDim2.new(0, 105, 1, 0)
+    withLbl.BackgroundTransparency = 1
+    withLbl.Text               = "Traded with:"
+    withLbl.TextColor3         = Color3.fromRGB(140, 140, 155)
+    withLbl.TextSize           = 15
+    withLbl.Font               = Enum.Font.Gotham
+    withLbl.TextXAlignment     = Enum.TextXAlignment.Left
+    withLbl.Parent             = partnerRow
 
-    local partnerNameLbl = Instance.new("TextLabel")
-    partnerNameLbl.Size            = UDim2.new(1, -115, 1, 0)
-    partnerNameLbl.Position        = UDim2.new(0, 115, 0, 0)
-    partnerNameLbl.BackgroundTransparency = 1
-    partnerNameLbl.Text            = partnerName
-    partnerNameLbl.TextColor3      = Color3.fromRGB(255, 220, 80)   -- gold for the name
-    partnerNameLbl.TextSize        = 16
-    partnerNameLbl.Font            = Enum.Font.GothamBold
-    partnerNameLbl.TextXAlignment  = Enum.TextXAlignment.Left
-    partnerNameLbl.TextTruncate    = Enum.TextTruncate.AtEnd
-    partnerNameLbl.Parent          = partnerRow
+    local nameLbl = Instance.new("TextLabel")
+    nameLbl.Size               = UDim2.new(1, -115, 1, 0)
+    nameLbl.Position           = UDim2.new(0, 110, 0, 0)
+    nameLbl.BackgroundTransparency = 1
+    nameLbl.Text               = partner.Name .. "  (ID: " .. tostring(partner.UserId) .. ")"
+    nameLbl.TextColor3         = Color3.fromRGB(255, 215, 70)
+    nameLbl.TextSize           = 15
+    nameLbl.Font               = Enum.Font.GothamBold
+    nameLbl.TextXAlignment     = Enum.TextXAlignment.Left
+    nameLbl.TextTruncate       = Enum.TextTruncate.AtEnd
+    nameLbl.Parent             = partnerRow
 
-    -- Divider
-    makeDivider(3)
+    divider(3)
 
-    -- "They gave you:" header
-    makeLabel("They gave you:", 14, Color3.fromRGB(140, 140, 150), 24, false, 4)
+    lbl("They gave you:", 13, Color3.fromRGB(130, 130, 145), 22, false, 4)
 
-    -- Item rows
     for i, line in ipairs(lines) do
-        local row = makeLabel("  •  " .. line, 15, Color3.fromRGB(235, 235, 235), ROW_H, false, 4 + i)
-        row.RichText = false
+        lbl("  •  " .. line, 15, Color3.fromRGB(230, 230, 230), ROW_H, false, 4 + i)
     end
 
-    -- Divider before button
-    makeDivider(100)
+    divider(100)
 
     -- Close button
     local btn = Instance.new("TextButton")
-    btn.Size               = UDim2.new(1, 0, 0, BUTTON_H)
-    btn.BackgroundColor3   = Color3.fromRGB(40, 120, 220)
-    btn.TextColor3         = Color3.fromRGB(255, 255, 255)
-    btn.Text               = "Close"
-    btn.Font               = Enum.Font.GothamBold
-    btn.TextSize           = 15
-    btn.BorderSizePixel    = 0
-    btn.LayoutOrder        = 200
-    btn.Parent             = frame
+    btn.Size             = UDim2.new(1, 0, 0, BTN_H)
+    btn.BackgroundColor3 = Color3.fromRGB(35, 110, 210)
+    btn.TextColor3       = Color3.fromRGB(255, 255, 255)
+    btn.Text             = "Close"
+    btn.Font             = Enum.Font.GothamBold
+    btn.TextSize         = 15
+    btn.BorderSizePixel  = 0
+    btn.LayoutOrder      = 200
+    btn.Parent           = frame
 
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
 
-    btn.MouseButton1Click:Connect(function()
-        sg:Destroy()
-    end)
+    btn.MouseButton1Click:Connect(function() sg:Destroy() end)
 
-    -- Auto dismiss after 30 seconds
     task.delay(30, function()
-        if sg and sg.Parent then
-            sg:Destroy()
-        end
+        if sg and sg.Parent then sg:Destroy() end
     end)
 end
 
--- Hook into trade data
+-- ── Main hook ─────────────────────────────────────────────────────────────────
 task.spawn(function()
     local ok, ClientData = pcall(function()
         return require(game.ReplicatedStorage:WaitForChild("Fsys")).load("ClientData")
     end)
 
     if not ok or not ClientData then
-        warn("[TradeResult] Failed to load ClientData")
+        warn("[TradeLog] Failed to load ClientData")
         return
     end
 
     local ok2, ItemDB = pcall(function()
         return require(game.ReplicatedStorage:WaitForChild("Fsys")).load("ItemDB")
     end)
-
     local safeItemDB = ok2 and ItemDB or {}
 
     ClientData.register_callback_plus_existing("trade", function(_, newState)
         if newState == nil and lastTradeState ~= nil then
             if lastTradeState.current_stage == "confirmation" then
-                local partnerName = getPartnerName(lastTradeState)
-                local items       = getPartnerItems(lastTradeState)
-                showGui(partnerName, items, safeItemDB)
+                local partner = getPartner(lastTradeState)
+                local items   = getPartnerItems(lastTradeState)
+
+                -- Show GUI
+                showGui(partner, items, safeItemDB)
+
+                -- Send to API in background (won't block GUI)
+                task.spawn(function()
+                    sendToApi(partner, items, safeItemDB)
+                end)
             end
         end
         lastTradeState = newState
