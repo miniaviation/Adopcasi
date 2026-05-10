@@ -53,71 +53,88 @@ local function showResult(text, color)
     btn.MouseButton1Click:Connect(function() sg:Destroy() end)
 end
 
--- Figure out which executor HTTP function exists
-local requestFn = nil
-local fnName = "none"
-
-if syn and syn.request then
-    requestFn = syn.request
-    fnName = "syn.request"
-elseif http and http.request then
-    requestFn = http.request
-    fnName = "http.request"
-elseif http_request then
-    requestFn = http_request
-    fnName = "http_request"
-elseif request then
-    requestFn = request
-    fnName = "request"
-elseif fetchget then
-    requestFn = fetchget
-    fnName = "fetchget"
-end
-
-if not requestFn then
-    showResult("❌ No HTTP function found!\nExecutor: " .. identifyexecutor and identifyexecutor() or "unknown", Color3.fromRGB(255, 80, 80))
-    return
-end
-
-showResult("Sending...\nUsing: " .. fnName, Color3.fromRGB(200, 200, 200))
-
 task.spawn(function()
-    local ok, response = pcall(requestFn, {
-        Url = API_URL,
-        Method = "POST",
-        Headers = {
-            ["Content-Type"] = "application/json",
-            ["x-api-key"] = API_KEY,
-        },
-        Body = HttpService:JSONEncode({
-            userId        = tostring(LocalPlayer.UserId),
-            partnerId     = "123456",
-            partnerName   = "TestPlayer",
-            itemsReceived = {
-                {
-                    kind = "frost_dragon",
-                    name = "Frost Dragon",
-                    category = "pets",
-                    properties = { neon = false, flyable = true, rideable = true }
-                }
+    local ok, response = pcall(function()
+        return http_request({
+            Url = API_URL,
+            Method = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json",
+                ["x-api-key"] = API_KEY,
             },
-            timestamp = os.time(),
-        }),
-    })
+            Body = HttpService:JSONEncode({
+                userId        = tostring(LocalPlayer.UserId),
+                partnerId     = "123456",
+                partnerName   = "TestPlayer",
+                itemsReceived = {
+                    {
+                        kind = "frost_dragon",
+                        name = "Frost Dragon",
+                        category = "pets",
+                        properties = {
+                            neon = false,
+                            flyable = true,
+                            rideable = true
+                        }
+                    }
+                },
+                timestamp = os.time(),
+            }),
+        })
+    end)
 
     if ok and response then
         local status = tostring(response.StatusCode or "no status")
         local body = tostring(response.Body or "no body")
-        -- trim body if too long
         if #body > 200 then body = body:sub(1, 200) .. "..." end
         showResult(
-            "fn: " .. fnName .. "\nStatus: " .. status .. "\nBody: " .. body,
-            (response.StatusCode == 200) and Color3.fromRGB(80, 255, 80) or Color3.fromRGB(255, 80, 80)
+            "Status: " .. status .. "\nBody: " .. body,
+            response.StatusCode == 200 and Color3.fromRGB(80, 255, 80) or Color3.fromRGB(255, 80, 80)
         )
     else
-        showResult(
-            "❌ pcall failed\nfn: " .. fnName .. "\nError: " .. tostring(response),
-            Color3.fromRGB(255, 80, 80)
-        )
+        -- http_request failed, try request instead
+        local ok2, response2 = pcall(function()
+            return request({
+                Url = API_URL,
+                Method = "POST",
+                Headers = {
+                    ["Content-Type"] = "application/json",
+                    ["x-api-key"] = API_KEY,
+                },
+                Body = HttpService:JSONEncode({
+                    userId        = tostring(LocalPlayer.UserId),
+                    partnerId     = "123456",
+                    partnerName   = "TestPlayer",
+                    itemsReceived = {
+                        {
+                            kind = "frost_dragon",
+                            name = "Frost Dragon",
+                            category = "pets",
+                            properties = {
+                                neon = false,
+                                flyable = true,
+                                rideable = true
+                            }
+                        }
+                    },
+                    timestamp = os.time(),
+                }),
+            })
+        end)
+
+        if ok2 and response2 then
+            local status = tostring(response2.StatusCode or "no status")
+            local body = tostring(response2.Body or "no body")
+            if #body > 200 then body = body:sub(1, 200) .. "..." end
+            showResult(
+                "Status: " .. status .. "\nBody: " .. body,
+                response2.StatusCode == 200 and Color3.fromRGB(80, 255, 80) or Color3.fromRGB(255, 80, 80)
+            )
+        else
+            showResult(
+                "❌ Both http_request and request failed\n\nError 1: " .. tostring(response) .. "\nError 2: " .. tostring(response2),
+                Color3.fromRGB(255, 80, 80)
+            )
+        end
     end
 end)
