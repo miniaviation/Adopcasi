@@ -1,124 +1,147 @@
-local Players = game:GetService("Players")
-local HttpService = game:GetService("HttpService")
-local LocalPlayer = Players.LocalPlayer
+-- TradeLogger (Executor Script)
+-- Saves YOUR completed trades to Firebase
+-- Logs: who you traded with + the items they gave YOU
+-- Compatible with Synapse X, KRNL, Fluxus, Solara, Wave
 
-local lastTradeState = nil
+local Players           = game:GetService("Players")
+local HttpService       = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer       = Players.LocalPlayer
 
--- ┌─────────────────────────────────────────────────────┐
--- │  Firebase config                                    │
--- └─────────────────────────────────────────────────────┘
-local FIREBASE_URL = "https://bloxwin-d8007-default-rtdb.firebaseio.com"
+local FIREBASE_URL = "https://bloxwin-d8007-default-rtdb.firebaseio.com/trades.json"
 
-local function getEndpoint(userId)
-    return FIREBASE_URL .. "/trades/" .. tostring(userId) .. ".json"
-end
+------------------------------------------------------------------------
+-- HTTP POST — tries every common executor request function
+------------------------------------------------------------------------
+local function http_post(url, body)
+    local req = (syn and syn.request)
+             or (http and http.request)
+             or (typeof(request)     == "function" and request)
+             or (typeof(httprequest) == "function" and httprequest)
+             or nil
 
--- ┌─────────────────────────────────────────────────────┐
--- │  Safe executor HTTP detection                       │
--- └─────────────────────────────────────────────────────┘
-local function getRequestFunc()
-    local ok, fn
-    ok, fn = pcall(function() return syn and syn.request end)
-    if ok and fn then return fn end
-    ok, fn = pcall(function() return http and http.request end)
-    if ok and fn then return fn end
-    ok, fn = pcall(function() return request end)
-    if ok and fn then return fn end
-    ok, fn = pcall(function() return http_request end)
-    if ok and fn then return fn end
-    return function(opts) return HttpService:RequestAsync(opts) end
-end
+    if not req then
+        warn("[TradeLogger] No HTTP function found on this executor.")
+        return false
+    end
 
-local requestFunc = getRequestFunc()
-
--- ┌─────────────────────────────────────────────────────┐
--- │  Save to Firebase                                   │
--- └─────────────────────────────────────────────────────┘
-local function saveToFirebase(partnerName, items)
-    local payload = HttpService:JSONEncode({
-        partnerName = partnerName,
-        items       = items,
-        timestamp   = os.time(),
-    })
-
-    local ok, result = pcall(requestFunc, {
-        Url     = getEndpoint(LocalPlayer.UserId),
+    local ok, res = pcall(req, {
+        Url     = url,
         Method  = "POST",
         Headers = { ["Content-Type"] = "application/json" },
-        Body    = payload,
+        Body    = HttpService:JSONEncode(body),
     })
 
-    if ok and result and (result.StatusCode == 200 or result.Success) then
-        print("[TradeLogger] ✔ Saved trade with " .. partnerName)
-    else
-        warn("[TradeLogger] ✘ Failed:", ok and result and result.StatusCode or result)
+    if not ok then
+        warn("[TradeLogger] Request error: " .. tostring(res))
+        return false
     end
+
+    return true
 end
 
--- ┌─────────────────────────────────────────────────────┐
--- │  Trade helpers                                      │
--- └─────────────────────────────────────────────────────┘
-local function getPartnerName(state)
-    if state.sender == LocalPlayer then
-        return state.recipient and state.recipient.Name or "Unknown"
-    else
-        return state.sender and state.sender.Name or "Unknown"
+------------------------------------------------------------------------
+-- Try to load ItemDB for human-readable item names
+------------------------------------------------------------------------
+local ItemDB = nil
+pcall(function()
+    local Fsys = require(ReplicatedStorage:WaitForChild("Fsys", 10))
+    ItemDB = Fsys.load("ItemDB")
+end)
+
+local function get_item_name(item)
+    if ItemDB
+    and ItemDB[item.category]
+    and ItemDB[item.category][item.kind] then
+        return ItemDB[item.category][item.kind].name
     end
+    return item.kind or "Unknown"
 end
 
-local function getPartnerItems(state, ItemDB)
-    local raw = {}
-    if state.sender == LocalPlayer then
-        raw = state.recipient_offer and state.recipient_offer.items or {}
-    else
-        raw = state.sender_offer and state.sender_offer.items or {}
-    end
-
+------------------------------------------------------------------------
+-- Build a clean item list from raw offer items
+------------------------------------------------------------------------
+local function build_items(raw_items)
     local out = {}
-    for _, item in ipairs(raw) do
-        local itemData = ItemDB[item.category] and ItemDB[item.category][item.kind]
-        local name     = (itemData and itemData.name) or item.kind or "Unknown"
-        local props    = item.properties or {}
-
-        local tags = {}
-        if props.mega_neon then table.insert(tags, "Mega Neon")
-        elseif props.neon  then table.insert(tags, "Neon") end
-        if props.flyable   then table.insert(tags, "Fly")  end
-        if props.rideable  then table.insert(tags, "Ride") end
-
+    for _, item in ipairs(raw_items or {}) do
+        local props = item.properties or {}
         table.insert(out, {
-            name = name,
-            tags = tags,
+            name      = get_item_name(item),
+            kind      = tostring(item.kind     or ""),
+            category  = tostring(item.category or ""),
+            unique    = tostring(item.unique   or ""),
+            neon      = props.neon      == true,
+            mega_neon = props.mega_neon == true,
+            flyable   = props.flyable   == true,
+            rideable  = props.rideable  == true,
+            age       = tostring(props.age     or ""),
         })
     end
     return out
 end
 
--- ┌─────────────────────────────────────────────────────┐
--- │  Main hook                                          │
--- └─────────────────────────────────────────────────────┘
-task.spawn(function()
-    local ok, ClientData = pcall(function()
-        return require(game.ReplicatedStorage:WaitForChild("Fsys")).load("ClientData")
-    end)
-    if not ok or not ClientData then
-        warn("[TradeLogger] Failed to load ClientData")
+------------------------------------------------------------------------
+-- Build payload and POST to Firebase
+------------------------------------------------------------------------
+local function save_trade(partner_name, partner_items)
+    local items = build_items(partner_items)
+
+    local payload = {
+        my_username   = LocalPlayer.Name,  -- you (the executor user)
+        partner       = partner_name,      -- who you traded with
+        partner_items = items,             -- items THEY gave you
+        timestamp     = os.time(),
+    }
+
+    local ok = http_post(FIREBASE_URL, payload)
+    if ok then
+        print(("[TradeLogger] ✓ Saved! Partner: %s | Items received: %d")
+            :format(partner_name, #items))
+    end
+end
+
+------------------------------------------------------------------------
+-- Hook into ClientData "trade" callback
+------------------------------------------------------------------------
+local ClientData = nil
+local ok, err = pcall(function()
+    local Fsys = require(ReplicatedStorage:WaitForChild("Fsys", 10))
+    ClientData = Fsys.load("ClientData")
+end)
+
+if not ok or not ClientData then
+    warn("[TradeLogger] Could not load ClientData: " .. tostring(err))
+    return
+end
+
+local last_state = nil
+
+ClientData.register_callback_plus_existing("trade", function(_, new_state)
+    local prev = last_state
+    last_state = new_state
+
+    -- Trade session just closed (state went from something -> nil)
+    if new_state ~= nil or prev == nil then return end
+
+    -- Determine which side we were on
+    local i_am_sender   = prev.sender == LocalPlayer
+    local my_offer      = i_am_sender and prev.sender_offer    or prev.recipient_offer
+    local partner_offer = i_am_sender and prev.recipient_offer or prev.sender_offer
+    local partner_obj   = i_am_sender and prev.recipient       or prev.sender
+
+    -- Only save if BOTH sides confirmed — means trade actually completed
+    if not (my_offer      and my_offer.confirmed
+        and partner_offer and partner_offer.confirmed) then
+        print("[TradeLogger] Trade cancelled/declined — nothing saved.")
         return
     end
 
-    local ok2, ItemDB = pcall(function()
-        return require(game.ReplicatedStorage:WaitForChild("Fsys")).load("ItemDB")
-    end)
-    local safeItemDB = ok2 and ItemDB or {}
+    -- Partner name: try Player object first, fall back to stored name in offer
+    local partner_name = (partner_obj   and partner_obj.Name)
+                      or (partner_offer and partner_offer.player_name)
+                      or "Unknown"
 
-    ClientData.register_callback_plus_existing("trade", function(_, newState)
-        if newState == nil and lastTradeState ~= nil then
-            if lastTradeState.current_stage == "confirmation" then
-                local partnerName  = getPartnerName(lastTradeState)
-                local partnerItems = getPartnerItems(lastTradeState, safeItemDB)
-                task.spawn(saveToFirebase, partnerName, partnerItems)
-            end
-        end
-        lastTradeState = newState
-    end)
+    task.spawn(save_trade, partner_name, partner_offer.items or {})
 end)
+
+print("[TradeLogger] ✓ Running as " .. LocalPlayer.Name .. " — watching for trades...")
