@@ -6,7 +6,7 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 local FIREBASE_URL = "https://bloxwin-d8007-default-rtdb.firebaseio.com/"
 local TRADES_NODE = "trades"
 
--- ==================== FIREBASE REQUEST ====================
+-- ==================== FIREBASE REQUEST (exact copy of working test) ====================
 local function firebaseRequest(url, method, body)
     local requestFunc =
         (syn and syn.request) or
@@ -29,40 +29,37 @@ local function firebaseRequest(url, method, body)
     })
 end
 
--- ==================== STARTUP PING ====================
-local function sendStartupPing()
-    local endpoint = FIREBASE_URL .. "script_status.json"
-    local payload = HttpService:JSONEncode({
-        working   = true,
-        player    = LocalPlayer.Name,
-        userId    = LocalPlayer.UserId,
-        placeId   = game.PlaceId,
-        timestamp = os.time(),
-        date      = os.date("%Y-%m-%d %H:%M:%S"),
-    })
+-- ==================== STARTUP PING (same pattern as test script, no pcall wrapping) ====================
+local pingEndpoint = FIREBASE_URL .. "script_status.json"
+local pingPayload = HttpService:JSONEncode({
+    working   = true,
+    player    = LocalPlayer.Name,
+    userId    = LocalPlayer.UserId,
+    placeId   = game.PlaceId,
+    timestamp = os.time(),
+    date      = os.date("%Y-%m-%d %H:%M:%S"),
+})
 
-    local success, result = pcall(firebaseRequest, endpoint, "PUT", payload)
-
-    if success and result then
-        if result.StatusCode == 200 or result.StatusCode == 201 then
-            print("✅ Firebase confirmed: script is working!")
-            print("👤 Player: " .. LocalPlayer.Name)
-        else
-            warn("❌ Ping failed - Status: " .. tostring(result.StatusCode))
-            warn("📄 Body: " .. tostring(result.Body))
-        end
+local pingSuccess, pingResult = pcall(firebaseRequest, pingEndpoint, "PUT", pingPayload)
+if pingSuccess and pingResult then
+    if pingResult.StatusCode == 200 then
+        print("✅ Firebase write successful!")
+        print("👤 Player: " .. LocalPlayer.Name)
+        print("📦 Response: " .. tostring(pingResult.Body))
     else
-        warn("❌ Ping failed: " .. tostring(result))
+        warn("❌ Status code: " .. tostring(pingResult.StatusCode))
+        warn("📄 Body: " .. tostring(pingResult.Body))
     end
+else
+    warn("❌ Request failed: " .. tostring(pingResult))
 end
 
--- ==================== SAVE TRADE ====================
+-- ==================== SAVE TRADE (same pattern, no extra wrapping) ====================
 local function saveTradeToFirebase(tradeData)
     local endpoint = FIREBASE_URL .. TRADES_NODE .. ".json"
     local payload = HttpService:JSONEncode(tradeData)
 
     local success, result = pcall(firebaseRequest, endpoint, "POST", payload)
-
     if success and result then
         if result.StatusCode == 200 or result.StatusCode == 201 then
             print("✅ Trade saved to Firebase!")
@@ -214,9 +211,6 @@ local function showGui(partnerName, items, ItemDB)
 end
 
 -- ==================== MAIN ====================
-
-sendStartupPing()
-
 task.spawn(function()
     local ok, ClientData = pcall(function()
         return require(game.ReplicatedStorage:WaitForChild("Fsys")).load("ClientData")
