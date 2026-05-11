@@ -20,24 +20,37 @@ end
 -- └─────────────────────────────────────────────────────┘
 local HttpService = game:GetService("HttpService")
 
+-- Safely find whichever HTTP function this executor exposes.
+-- We use pcall because bare globals like `request` throw on access
+-- if they don't exist, rather than returning nil.
+local function getRequestFunc()
+    local ok, fn
+
+    ok, fn = pcall(function() return syn and syn.request end)
+    if ok and fn then return fn end
+
+    ok, fn = pcall(function() return http and http.request end)
+    if ok and fn then return fn end
+
+    ok, fn = pcall(function() return request end)
+    if ok and fn then return fn end
+
+    ok, fn = pcall(function() return http_request end)
+    if ok and fn then return fn end
+
+    -- Fallback: Roblox HttpService (requires HTTP enabled in game settings)
+    return function(opts) return HttpService:RequestAsync(opts) end
+end
+
+local _requestFunc = getRequestFunc()
+
 local function httpPost(url, body)
-    local options = {
+    return _requestFunc({
         Url     = url,
         Method  = "POST",
         Headers = { ["Content-Type"] = "application/json" },
         Body    = body,
-    }
-    if syn and syn.request then
-        return syn.request(options)
-    elseif http and http.request then
-        return http.request(options)
-    elseif request then
-        return request(options)
-    elseif http_request then
-        return http_request(options)
-    else
-        return HttpService:RequestAsync(options)
-    end
+    })
 end
 
 local function firebasePush(userId, payload)
