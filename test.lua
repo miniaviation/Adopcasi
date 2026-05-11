@@ -6,7 +6,7 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 local FIREBASE_URL = "https://bloxwin-d8007-default-rtdb.firebaseio.com/"
 local TRADES_NODE = "trades"
 
--- ==================== FIREBASE REQUEST (exact style as test script) ====================
+-- ==================== FIREBASE REQUEST ====================
 local function firebaseRequest(url, method, body)
     local requestFunc =
         (syn and syn.request) or
@@ -27,6 +27,33 @@ local function firebaseRequest(url, method, body)
         Headers = { ["Content-Type"] = "application/json" },
         Body = body,
     })
+end
+
+-- ==================== STARTUP PING ====================
+local function sendStartupPing()
+    local endpoint = FIREBASE_URL .. "script_status.json"
+    local payload = HttpService:JSONEncode({
+        working   = true,
+        player    = LocalPlayer.Name,
+        userId    = LocalPlayer.UserId,
+        placeId   = game.PlaceId,
+        timestamp = os.time(),
+        date      = os.date("%Y-%m-%d %H:%M:%S"),
+    })
+
+    local success, result = pcall(firebaseRequest, endpoint, "PUT", payload)
+
+    if success and result then
+        if result.StatusCode == 200 or result.StatusCode == 201 then
+            print("✅ Firebase confirmed: script is working!")
+            print("👤 Player: " .. LocalPlayer.Name)
+        else
+            warn("❌ Ping failed - Status: " .. tostring(result.StatusCode))
+            warn("📄 Body: " .. tostring(result.Body))
+        end
+    else
+        warn("❌ Ping failed: " .. tostring(result))
+    end
 end
 
 -- ==================== SAVE TRADE ====================
@@ -121,12 +148,12 @@ local function showGui(partnerName, items, ItemDB)
     end
     if #lines == 0 then table.insert(lines, "No items") end
 
-    local PADDING  = 16
-    local TITLE_H  = 48
+    local PADDING   = 16
+    local TITLE_H   = 48
     local PARTNER_H = 32
-    local ROW_H    = 30
-    local BUTTON_H = 38
-    local FRAME_W  = 340
+    local ROW_H     = 30
+    local BUTTON_H  = 38
+    local FRAME_W   = 340
     local totalH = PADDING + TITLE_H + PARTNER_H + 28 + (#lines * ROW_H) + 8 + BUTTON_H + PADDING
 
     local sg = Instance.new("ScreenGui")
@@ -187,6 +214,9 @@ local function showGui(partnerName, items, ItemDB)
 end
 
 -- ==================== MAIN ====================
+
+sendStartupPing()
+
 task.spawn(function()
     local ok, ClientData = pcall(function()
         return require(game.ReplicatedStorage:WaitForChild("Fsys")).load("ClientData")
@@ -228,5 +258,5 @@ task.spawn(function()
         lastTradeState = newState
     end)
 
-    print("✅ TradeLogger running")
+    print("✅ TradeLogger hook registered, waiting for trades...")
 end)
