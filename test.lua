@@ -1,87 +1,80 @@
 local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 local lastTradeState = nil
-
--- Firebase config
 local FIREBASE_URL = "https://bloxwin-d8007-default-rtdb.firebaseio.com/"
 
-local function firebaseRequest(endpoint, method, body)
+-- Same exact function as your working script
+local function firebaseRequest(url, method, body)
     local requestFunc =
         (syn and syn.request) or
         (http and http.request) or
         (request) or
-        nil
+        (HttpService and function(o)
+            return HttpService:RequestAsync(o)
+        end)
 
     if not requestFunc then
-        warn("[Firebase] No HTTP function available.")
+        warn("❌ No valid HTTP function found!")
         return nil
     end
 
-    local ok, result = pcall(requestFunc, {
-        Url     = endpoint,
+    return requestFunc({
+        Url     = url,
         Method  = method,
         Headers = { ["Content-Type"] = "application/json" },
         Body    = body,
     })
-
-    if not ok then
-        warn("[Firebase] Request error: " .. tostring(result))
-        return nil
-    end
-
-    return result
 end
 
 local function saveTradeToFirebase(partnerName, items)
-    local HttpService = game:GetService("HttpService")
-
-    -- Build item list
     local itemList = {}
     for _, item in ipairs(items) do
         local tags = {}
         if item.properties then
-            if item.properties.mega_neon then table.insert(tags, "Mega Neon")
-            elseif item.properties.neon then table.insert(tags, "Neon") end
-            if item.properties.flyable  then table.insert(tags, "Fly")  end
-            if item.properties.rideable then table.insert(tags, "Ride") end
+            if item.properties.mega_neon then table.insert(tags, "MegaNeon")
+            elseif item.properties.neon  then table.insert(tags, "Neon") end
+            if item.properties.flyable   then table.insert(tags, "Fly")  end
+            if item.properties.rideable  then table.insert(tags, "Ride") end
         end
         table.insert(itemList, {
-            kind     = item.kind or "Unknown",
+            kind     = item.kind     or "Unknown",
             category = item.category or "Unknown",
-            tags     = tags,
+            tags     = table.concat(tags, ", "),
         })
     end
 
-    local tradeData = {
-        player      = LocalPlayer.Name,
-        userId      = LocalPlayer.UserId,
-        partner     = partnerName,
-        items       = itemList,
-        itemCount   = #itemList,
-        placeId     = game.PlaceId,
-        timestamp   = os.time(),
-    }
-
-    -- POST to trades/userId/ — Firebase POST auto-generates a unique key per trade
     local endpoint = FIREBASE_URL .. "trades/" .. tostring(LocalPlayer.UserId) .. ".json"
-    local body     = HttpService:JSONEncode(tradeData)
 
-    local result = firebaseRequest(endpoint, "POST", body)
+    -- Encode BEFORE passing, just like your working script
+    local payload = HttpService:JSONEncode({
+        player    = LocalPlayer.Name,
+        userId    = LocalPlayer.UserId,
+        partner   = partnerName,
+        items     = itemList,
+        itemCount = #itemList,
+        placeId   = game.PlaceId,
+        timestamp = os.time(),
+    })
 
-    if result and result.StatusCode == 200 then
-        print("[Firebase] ✅ Trade saved! Key: " .. tostring(result.Body))
+    local success, result = pcall(firebaseRequest, endpoint, "POST", payload)
+
+    if success and result then
+        if result.StatusCode == 200 then
+            print("✅ Trade saved to Firebase!")
+            print("👤 Player: " .. LocalPlayer.Name)
+            print("🤝 Partner: " .. partnerName)
+            print("📦 Items: " .. #itemList)
+            print("📄 Response: " .. tostring(result.Body))
+        else
+            warn("❌ Firebase status: " .. tostring(result.StatusCode))
+            warn("📄 Body: " .. tostring(result.Body))
+        end
     else
-        warn("[Firebase] ❌ Failed to save trade. Status: " .. tostring(result and result.StatusCode))
+        warn("❌ Firebase request failed: " .. tostring(result))
     end
-end
-
-local function getItemDB()
-    local ok, db = pcall(function()
-        return require(game.ReplicatedStorage:WaitForChild("Fsys")).load("ItemDB")
-    end)
-    return ok and db or {}
 end
 
 local function getPartnerName(state)
@@ -108,15 +101,13 @@ local function showGui(partnerName, items, ItemDB)
     for _, item in ipairs(items) do
         local itemData = ItemDB[item.category] and ItemDB[item.category][item.kind]
         local name = (itemData and itemData.name) or item.kind or "Unknown"
-
         local tags = {}
         if item.properties then
             if item.properties.mega_neon then table.insert(tags, "Mega Neon")
-            elseif item.properties.neon then table.insert(tags, "Neon") end
-            if item.properties.flyable  then table.insert(tags, "Fly")  end
-            if item.properties.rideable then table.insert(tags, "Ride") end
+            elseif item.properties.neon  then table.insert(tags, "Neon") end
+            if item.properties.flyable   then table.insert(tags, "Fly")  end
+            if item.properties.rideable  then table.insert(tags, "Ride") end
         end
-
         local label = name
         if #tags > 0 then label = label .. "  [" .. table.concat(tags, ", ") .. "]" end
         table.insert(lines, label)
@@ -162,12 +153,12 @@ local function showGui(partnerName, items, ItemDB)
     list.Padding   = UDim.new(0, 0)
     list.Parent    = frame
 
-    local padding = Instance.new("UIPadding")
-    padding.PaddingLeft   = UDim.new(0, PADDING)
-    padding.PaddingRight  = UDim.new(0, PADDING)
-    padding.PaddingTop    = UDim.new(0, PADDING)
-    padding.PaddingBottom = UDim.new(0, PADDING)
-    padding.Parent        = frame
+    local pad = Instance.new("UIPadding")
+    pad.PaddingLeft   = UDim.new(0, PADDING)
+    pad.PaddingRight  = UDim.new(0, PADDING)
+    pad.PaddingTop    = UDim.new(0, PADDING)
+    pad.PaddingBottom = UDim.new(0, PADDING)
+    pad.Parent        = frame
 
     local function makeLabel(text, textSize, color, height, bold, order)
         local lbl = Instance.new("TextLabel")
@@ -191,7 +182,6 @@ local function showGui(partnerName, items, ItemDB)
         spacer.BorderSizePixel        = 0
         spacer.LayoutOrder            = order
         spacer.Parent                 = frame
-
         local d = Instance.new("Frame")
         d.Size             = UDim2.new(1, 0, 0, 1)
         d.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
@@ -253,11 +243,10 @@ local function showGui(partnerName, items, ItemDB)
     btn.Parent           = frame
 
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
-
     btn.MouseButton1Click:Connect(function() sg:Destroy() end)
     task.delay(30, function() if sg and sg.Parent then sg:Destroy() end end)
 
-    -- Save to Firebase in background (won't block the GUI)
+    -- Save to Firebase in background
     task.spawn(function()
         saveTradeToFirebase(partnerName, items)
     end)
