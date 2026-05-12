@@ -1,260 +1,87 @@
+-- ============================================================
+--  BloxWing Signal Sender  –  Executor Script
+-- ============================================================
+--  Paste into any executor (Synapse X, KRNL, Fluxus, Solara…)
+--  Sends your player info to BloxWing's backend and saves
+--  a record to Firebase confirming the ping.
+-- ============================================================
+
+local BACKEND_URL = "https://www.bloxwing.com/api/ping"
+local API_KEY     = ""  -- set this if you added one in Vercel env vars
+
+-- ── Detect executor HTTP function ────────────────────────────
+local httpRequest =
+    request       or
+    http_request  or
+    (syn  and syn.request)    or
+    (fluxus and fluxus.request) or
+    nil
+
+if not httpRequest then
+    warn("[BloxWing] ❌  No HTTP function found in this executor.")
+    return
+end
+
+local Players     = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
-local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local localPlayer = Players.LocalPlayer
 
-local SUPABASE_URL = "https://wynfvxawuuzgzlrrwlbm.supabase.co/rest/v1"
-local SUPABASE_KEY = "sb_publishable_bxVQK8reHPGsfSlGpLmVLQ_v9QJIzfM"
+-- ── Build payload ─────────────────────────────────────────────
+local function buildPayload()
+    local char = localPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local pos  = root and root.Position or Vector3.new(0, 0, 0)
 
--- ==================== SUPABASE REQUEST ====================
-local function supabaseRequest(table_name, body)
-    local requestFunc =
-        (syn and syn.request) or
-        (http and http.request) or
-        (request) or
-        (HttpService and function(o)
-            return HttpService:RequestAsync(o)
-        end)
-
-    if not requestFunc then
-        warn("❌ No valid HTTP function found for this executor!")
-        return nil
-    end
-
-    return requestFunc({
-        Url = SUPABASE_URL .. "/" .. table_name,
-        Method = "POST",
-        Headers = {
-            ["Content-Type"] = "application/json",
-            ["apikey"] = SUPABASE_KEY,
-            ["Authorization"] = "Bearer " .. SUPABASE_KEY,
-            ["Prefer"] = "return=minimal",
+    return HttpService:JSONEncode({
+        event      = "executor_ping",
+        playerId   = tostring(localPlayer.UserId),
+        playerName = localPlayer.Name,
+        timestamp  = os.time(),
+        gameId     = tostring(game.GameId),
+        placeId    = tostring(game.PlaceId),
+        position   = {
+            x = math.floor(pos.X),
+            y = math.floor(pos.Y),
+            z = math.floor(pos.Z),
         },
-        Body = HttpService:JSONEncode(body),
     })
 end
 
--- ==================== STARTUP PING ====================
-local pingSuccess, pingResult = pcall(supabaseRequest, "trades", {
-    player    = LocalPlayer.Name,
-    userId    = LocalPlayer.UserId,
-    partner   = "SCRIPT_STARTED",
-    gave      = "[]",
-    received  = "[]",
-    stage     = "startup_ping",
-    timestamp = os.time(),
-    date      = os.date("%Y-%m-%d %H:%M:%S"),
-    placeId   = game.PlaceId,
-})
-
-if pingSuccess and pingResult then
-    if pingResult.StatusCode == 200 or pingResult.StatusCode == 201 then
-        print("✅ Supabase write successful!")
-        print("👤 Player: " .. LocalPlayer.Name)
-        print("📦 Response: " .. tostring(pingResult.Body))
-    else
-        warn("❌ Status code: " .. tostring(pingResult.StatusCode))
-        warn("📄 Body: " .. tostring(pingResult.Body))
-    end
-else
-    warn("❌ Request failed: " .. tostring(pingResult))
-end
-
--- ==================== SAVE TRADE ====================
-local function saveTradeToSupabase(tradeData)
-    local success, result = pcall(supabaseRequest, "trades", tradeData)
-
-    if success and result then
-        if result.StatusCode == 200 or result.StatusCode == 201 then
-            print("✅ Trade saved to Supabase!")
-            print("👤 Player: " .. LocalPlayer.Name)
-            print("📦 Response: " .. tostring(result.Body))
-        else
-            warn("❌ Status code: " .. tostring(result.StatusCode))
-            warn("📄 Body: " .. tostring(result.Body))
-        end
-    else
-        warn("❌ Request failed: " .. tostring(result))
-    end
-end
-
--- ==================== HELPERS ====================
-local function getItemDB()
-    local ok, db = pcall(function()
-        return require(game.ReplicatedStorage:WaitForChild("Fsys")).load("ItemDB")
-    end)
-    return ok and db or {}
-end
-
-local function getPartnerName(state)
-    if state.sender == LocalPlayer then
-        return state.recipient and state.recipient.Name or "Unknown"
-    else
-        return state.sender and state.sender.Name or "Unknown"
-    end
-end
-
-local function getPartnerItems(state)
-    if state.sender == LocalPlayer then
-        return state.recipient_offer and state.recipient_offer.items or {}
-    else
-        return state.sender_offer and state.sender_offer.items or {}
-    end
-end
-
-local function getMyItems(state)
-    if state.sender == LocalPlayer then
-        return state.sender_offer and state.sender_offer.items or {}
-    else
-        return state.recipient_offer and state.recipient_offer.items or {}
-    end
-end
-
-local function formatItems(items, ItemDB)
-    local formatted = {}
-    for _, item in ipairs(items or {}) do
-        local itemData = ItemDB[item.category] and ItemDB[item.category][item.kind]
-        local props = item.properties or {}
-        table.insert(formatted, {
-            name      = (itemData and itemData.name) or item.kind or "Unknown",
-            kind      = item.kind or "unknown",
-            category  = item.category or "unknown",
-            neon      = props.neon or false,
-            mega_neon = props.mega_neon or false,
-            flyable   = props.flyable or false,
-            rideable  = props.rideable or false,
-        })
-    end
-    return formatted
-end
-
--- ==================== GUI ====================
-local function showGui(partnerName, items, ItemDB)
-    local existing = PlayerGui:FindFirstChild("TradeResultGui")
-    if existing then existing:Destroy() end
-
-    local lines = {}
-    for _, item in ipairs(items) do
-        local itemData = ItemDB[item.category] and ItemDB[item.category][item.kind]
-        local name = (itemData and itemData.name) or item.kind or "Unknown"
-        local tags = {}
-        local props = item.properties or {}
-        if props.mega_neon then table.insert(tags, "Mega Neon")
-        elseif props.neon then table.insert(tags, "Neon") end
-        if props.flyable then table.insert(tags, "Fly") end
-        if props.rideable then table.insert(tags, "Ride") end
-        local label = name
-        if #tags > 0 then label = label .. " [" .. table.concat(tags, ", ") .. "]" end
-        table.insert(lines, label)
-    end
-    if #lines == 0 then table.insert(lines, "No items") end
-
-    local PADDING   = 16
-    local TITLE_H   = 48
-    local PARTNER_H = 32
-    local ROW_H     = 30
-    local BUTTON_H  = 38
-    local FRAME_W   = 340
-    local totalH = PADDING + TITLE_H + PARTNER_H + 28 + (#lines * ROW_H) + 8 + BUTTON_H + PADDING
-
-    local sg = Instance.new("ScreenGui")
-    sg.Name = "TradeResultGui"
-    sg.ResetOnSpawn = false
-    sg.DisplayOrder = 999
-    sg.IgnoreGuiInset = true
-    sg.Parent = PlayerGui
-
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.fromOffset(FRAME_W, totalH)
-    frame.AnchorPoint = Vector2.new(0.5, 0.5)
-    frame.Position = UDim2.new(0.5, 0, 0.5, 0)
-    frame.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
-    frame.Parent = sg
-    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 14)
-    Instance.new("UIListLayout", frame).SortOrder = Enum.SortOrder.LayoutOrder
-
-    local pad = Instance.new("UIPadding", frame)
-    pad.PaddingLeft   = UDim.new(0, PADDING)
-    pad.PaddingRight  = UDim.new(0, PADDING)
-    pad.PaddingTop    = UDim.new(0, PADDING)
-    pad.PaddingBottom = UDim.new(0, PADDING)
-
-    local function makeLabel(text, size, color, height, bold, order)
-        local lbl = Instance.new("TextLabel")
-        lbl.Size = UDim2.new(1, 0, 0, height)
-        lbl.BackgroundTransparency = 1
-        lbl.Text = text
-        lbl.TextColor3 = color
-        lbl.TextSize = size
-        lbl.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
-        lbl.TextXAlignment = Enum.TextXAlignment.Left
-        lbl.LayoutOrder = order
-        lbl.Parent = frame
+-- ── Send ping ─────────────────────────────────────────────────
+local function sendPing()
+    local headers = { ["Content-Type"] = "application/json" }
+    if API_KEY ~= "" then
+        headers["x-api-key"] = API_KEY
     end
 
-    makeLabel("✔ Trade Complete!", 20, Color3.fromRGB(100, 200, 255), TITLE_H, true, 1)
-    makeLabel("Traded with: " .. partnerName, 16, Color3.fromRGB(255, 220, 80), PARTNER_H, true, 2)
-    makeLabel("They gave you:", 14, Color3.fromRGB(140, 140, 150), 28, false, 3)
+    local ok, result = pcall(httpRequest, {
+        Url     = BACKEND_URL,
+        Method  = "POST",
+        Headers = headers,
+        Body    = buildPayload(),
+    })
 
-    for i, line in ipairs(lines) do
-        makeLabel(" • " .. line, 15, Color3.fromRGB(235, 235, 235), ROW_H, false, 10 + i)
-    end
-
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, 0, 0, BUTTON_H)
-    btn.BackgroundColor3 = Color3.fromRGB(40, 120, 220)
-    btn.Text = "Close"
-    btn.TextColor3 = Color3.new(1, 1, 1)
-    btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 15
-    btn.LayoutOrder = 100
-    btn.Parent = frame
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
-    btn.MouseButton1Click:Connect(function() sg:Destroy() end)
-    task.delay(30, function() if sg and sg.Parent then sg:Destroy() end end)
-end
-
--- ==================== MAIN ====================
-task.spawn(function()
-    local ok, ClientData = pcall(function()
-        return require(game.ReplicatedStorage:WaitForChild("Fsys")).load("ClientData")
-    end)
-
-    if not ok or not ClientData then
-        warn("❌ Failed to load ClientData: " .. tostring(ClientData))
+    if not ok then
+        warn("[BloxWing] ❌  Request error: " .. tostring(result))
         return
     end
 
-    local ItemDB = getItemDB()
-    local lastTradeState = nil
+    local status = result.StatusCode or result.status_code or 0
+    local body   = result.Body       or result.body        or ""
 
-    ClientData.register_callback_plus_existing("trade", function(_, newState)
-        if newState == nil and lastTradeState ~= nil then
-            local stage = tostring(lastTradeState.current_stage or "")
-
-            if stage ~= "declined" and stage ~= "cancelled" then
-                local partnerName  = getPartnerName(lastTradeState)
-                local partnerItems = getPartnerItems(lastTradeState)
-                local myItems      = getMyItems(lastTradeState)
-
-                showGui(partnerName, partnerItems, ItemDB)
-
-                saveTradeToSupabase({
-                    player    = LocalPlayer.Name,
-                    userId    = LocalPlayer.UserId,
-                    partner   = partnerName,
-                    gave      = HttpService:JSONEncode(formatItems(myItems, ItemDB)),
-                    received  = HttpService:JSONEncode(formatItems(partnerItems, ItemDB)),
-                    stage     = stage,
-                    timestamp = os.time(),
-                    date      = os.date("%Y-%m-%d %H:%M:%S"),
-                    placeId   = game.PlaceId,
-                })
-            end
+    if status == 200 or status == 201 then
+        -- Parse the response to show the Firebase doc ID
+        local ok2, parsed = pcall(HttpService.JSONDecode, HttpService, body)
+        if ok2 and parsed and parsed.docId then
+            print(("[BloxWing] ✅  Saved to Firebase!  Doc: %s"):format(parsed.docId))
+        else
+            print(("[BloxWing] ✅  Success! Status: %d"):format(status))
         end
+    else
+        warn(("[BloxWing] ⚠️  Backend replied %d: %s"):format(status, body))
+    end
+end
 
-        lastTradeState = newState
-    end)
-
-    print("✅ TradeLogger hook registered, waiting for trades...")
-end)
+-- ── Run ───────────────────────────────────────────────────────
+print("[BloxWing] Sending ping as " .. localPlayer.Name .. " …")
+sendPing()
