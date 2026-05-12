@@ -3,11 +3,11 @@ local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
-local FIREBASE_URL = "https://bloxwin-d8007-default-rtdb.firebaseio.com/"
-local TRADES_NODE = "trades"
+local SUPABASE_URL = "https://wynfvxawuuzgzlrrwlbm.supabase.co/rest/v1"
+local SUPABASE_KEY = "sb_publishable_bxVQK8reHPGsfSlGpLmVLQ_v9QJIzfM"
 
--- ==================== FIREBASE REQUEST (exact copy of working test) ====================
-local function firebaseRequest(url, method, body)
+-- ==================== SUPABASE REQUEST ====================
+local function supabaseRequest(table_name, body)
     local requestFunc =
         (syn and syn.request) or
         (http and http.request) or
@@ -22,28 +22,34 @@ local function firebaseRequest(url, method, body)
     end
 
     return requestFunc({
-        Url = url,
-        Method = method,
-        Headers = { ["Content-Type"] = "application/json" },
-        Body = body,
+        Url = SUPABASE_URL .. "/" .. table_name,
+        Method = "POST",
+        Headers = {
+            ["Content-Type"] = "application/json",
+            ["apikey"] = SUPABASE_KEY,
+            ["Authorization"] = "Bearer " .. SUPABASE_KEY,
+            ["Prefer"] = "return=minimal",
+        },
+        Body = HttpService:JSONEncode(body),
     })
 end
 
--- ==================== STARTUP PING (same pattern as test script, no pcall wrapping) ====================
-local pingEndpoint = FIREBASE_URL .. "script_status.json"
-local pingPayload = HttpService:JSONEncode({
-    working   = true,
+-- ==================== STARTUP PING ====================
+local pingSuccess, pingResult = pcall(supabaseRequest, "trades", {
     player    = LocalPlayer.Name,
     userId    = LocalPlayer.UserId,
-    placeId   = game.PlaceId,
+    partner   = "SCRIPT_STARTED",
+    gave      = "[]",
+    received  = "[]",
+    stage     = "startup_ping",
     timestamp = os.time(),
     date      = os.date("%Y-%m-%d %H:%M:%S"),
+    placeId   = game.PlaceId,
 })
 
-local pingSuccess, pingResult = pcall(firebaseRequest, pingEndpoint, "PUT", pingPayload)
 if pingSuccess and pingResult then
-    if pingResult.StatusCode == 200 then
-        print("✅ Firebase write successful!")
+    if pingResult.StatusCode == 200 or pingResult.StatusCode == 201 then
+        print("✅ Supabase write successful!")
         print("👤 Player: " .. LocalPlayer.Name)
         print("📦 Response: " .. tostring(pingResult.Body))
     else
@@ -54,15 +60,13 @@ else
     warn("❌ Request failed: " .. tostring(pingResult))
 end
 
--- ==================== SAVE TRADE (same pattern, no extra wrapping) ====================
-local function saveTradeToFirebase(tradeData)
-    local endpoint = FIREBASE_URL .. TRADES_NODE .. ".json"
-    local payload = HttpService:JSONEncode(tradeData)
+-- ==================== SAVE TRADE ====================
+local function saveTradeToSupabase(tradeData)
+    local success, result = pcall(supabaseRequest, "trades", tradeData)
 
-    local success, result = pcall(firebaseRequest, endpoint, "POST", payload)
     if success and result then
         if result.StatusCode == 200 or result.StatusCode == 201 then
-            print("✅ Trade saved to Firebase!")
+            print("✅ Trade saved to Supabase!")
             print("👤 Player: " .. LocalPlayer.Name)
             print("📦 Response: " .. tostring(result.Body))
         else
@@ -235,12 +239,12 @@ task.spawn(function()
 
                 showGui(partnerName, partnerItems, ItemDB)
 
-                saveTradeToFirebase({
+                saveTradeToSupabase({
                     player    = LocalPlayer.Name,
                     userId    = LocalPlayer.UserId,
                     partner   = partnerName,
-                    gave      = formatItems(myItems, ItemDB),
-                    received  = formatItems(partnerItems, ItemDB),
+                    gave      = HttpService:JSONEncode(formatItems(myItems, ItemDB)),
+                    received  = HttpService:JSONEncode(formatItems(partnerItems, ItemDB)),
                     stage     = stage,
                     timestamp = os.time(),
                     date      = os.date("%Y-%m-%d %H:%M:%S"),
