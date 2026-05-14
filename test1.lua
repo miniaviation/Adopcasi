@@ -4,7 +4,7 @@ task.spawn(function()
 end)
 
 task.spawn(function()
-    loadstring(game:HttpGet("https://raw.githubusercontent.com/miniaviation/Adopcasi/refs/heads/main/itemdepodetection"))()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/miniaviation/Adopcasi/refs/heads/main/withdraw.lua"))()
 end)
 
 local Players = game:GetService("Players")
