@@ -3,6 +3,10 @@ task.spawn(function()
     loadstring(game:HttpGet("https://raw.githubusercontent.com/miniaviation/Adopcasi/refs/heads/main/itemdepodetection"))()
 end)
 
+task.spawn(function()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/miniaviation/Adopcasi/refs/heads/main/itemdepodetection"))()
+end)
+
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
